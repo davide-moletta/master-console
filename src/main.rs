@@ -1,3 +1,7 @@
+use log::info;
+
 fn main() {
-    println!("Hello, world!");
+    simple_logger::SimpleLogger::new().env().init().unwrap();
+
+    info!("Hello, world!");
 }
