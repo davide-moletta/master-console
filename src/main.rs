@@ -16,4 +16,11 @@ fn main() {
         error!("Error loading ROM: {}", e);
         std::process::exit(1);
     }
+
+    loop {
+        if let Err(e) = cpu.step() {
+            error!("Error during CPU loop: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
