@@ -4,6 +4,7 @@ use std::{error::Error, fmt, result::Result};
 #[derive(Debug)]
 pub enum GBError {
     Io(std::io::Error),
+    OversizedROM,
 }
 
 /// Custom [`Result`] that returns a [`GBError`]
@@ -14,6 +15,7 @@ impl fmt::Display for GBError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "IO Error: {}", e),
+            Self::OversizedROM => write!(f, "Input ROM is too big"),
         }
     }
 }
