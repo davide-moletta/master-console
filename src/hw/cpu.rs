@@ -135,104 +135,147 @@ impl Cpu {
         debug!("Performing instruction: {:?} - CPU state: {}", instr, self);
 
         // Execute the decoded instruction
-        self.execute(instr)
+        match self.execute(instr) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     // Simulate the decoded instruction performing the same operation
-    fn execute(&mut self, instr: Instruction) -> GBResult<()> {
+    // Returns the number of cycles used
+    fn execute(&mut self, instr: Instruction) -> GBResult<u32> {
         match instr {
-            Instruction::NOP => {}
+            Instruction::NOP => Ok(4),
 
             Instruction::STOP => {
                 warn!("STOP executed, entering deep sleep");
                 // TODO for now work like HALT
                 self.halted = true;
+                Ok(4)
             }
 
-            Instruction::HALT => self.halted = true,
+            Instruction::HALT => {
+                self.halted = true;
+                Ok(4)
+            }
 
-            Instruction::DI => self.ime = false,
+            Instruction::DI => {
+                self.ime = false;
+                Ok(4)
+            }
 
-            Instruction::EI => self.ime = true,
+            Instruction::EI => {
+                self.ime = true;
+                Ok(4)
+            }
 
             Instruction::LD_8(dst, src) => {
                 let val = self.get_reg8(src);
                 self.set_reg8(dst, val);
+                // 8 cycles if memory is accessed ([HL]), else 4
+                Ok(if dst == Reg8::HLIndirect || src == Reg8::HLIndirect {
+                    8
+                } else {
+                    4
+                })
             }
 
             Instruction::LD_8_IMM(dst, val) => {
                 self.set_reg8(dst, val);
+                // 12 cycles for LD [HL], d8; else 8
+                Ok(if dst == Reg8::HLIndirect { 12 } else { 8 })
             }
 
             Instruction::LDH_A_IMM(val) => {
                 let address = IO_MEMORY_START | (val as u16);
                 self.a = self.bus.read(address);
+                Ok(12)
             }
 
             Instruction::LDH_IMM_A(val) => {
                 let address = IO_MEMORY_START | (val as u16);
                 self.bus.write(address, self.a);
+                Ok(12)
             }
 
             Instruction::LDH_A_C => {
                 let address = IO_MEMORY_START | (self.c as u16);
                 self.a = self.bus.read(address);
+                Ok(8)
             }
 
             Instruction::LDH_C_A => {
                 let address = IO_MEMORY_START | (self.c as u16);
                 self.bus.write(address, self.a);
+                Ok(8)
             }
 
-            Instruction::LD_A_IMM_16(val) => self.a = self.bus.read(val),
+            Instruction::LD_A_IMM_16(val) => {
+                self.a = self.bus.read(val);
+                Ok(16)
+            }
 
-            Instruction::LD_IMM_16_A(val) => self.bus.write(val, self.a),
+            Instruction::LD_IMM_16_A(val) => {
+                self.bus.write(val, self.a);
+                Ok(16)
+            }
 
             Instruction::LD_A_BC => {
                 let address = self.get_reg16(Reg16::BC);
                 self.a = self.bus.read(address);
+                Ok(8)
             }
 
             Instruction::LD_A_DE => {
                 let address = self.get_reg16(Reg16::DE);
                 self.a = self.bus.read(address);
+                Ok(8)
             }
 
             Instruction::LD_BC_A => {
                 let address = self.get_reg16(Reg16::BC);
                 self.bus.write(address, self.a);
+                Ok(8)
             }
 
             Instruction::LD_DE_A => {
                 let address = self.get_reg16(Reg16::DE);
                 self.bus.write(address, self.a);
+                Ok(8)
             }
 
             Instruction::LD_A_HLI => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.a = self.bus.read(hl);
                 self.set_reg16(Reg16::HL, hl.wrapping_add(1));
+                Ok(8)
             }
 
             Instruction::LD_A_HLD => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.a = self.bus.read(hl);
                 self.set_reg16(Reg16::HL, hl.wrapping_sub(1));
+                Ok(8)
             }
 
             Instruction::LD_HLI_A => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.set_reg16(Reg16::HL, hl.wrapping_add(1));
                 self.bus.write(hl, self.a);
+                Ok(8)
             }
 
             Instruction::LD_HLD_A => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.set_reg16(Reg16::HL, hl.wrapping_sub(1));
                 self.bus.write(hl, self.a);
+                Ok(8)
             }
 
-            Instruction::LD_16_IMM(dst, val) => self.set_reg16(dst, val),
+            Instruction::LD_16_IMM(dst, val) => {
+                self.set_reg16(dst, val);
+                Ok(12)
+            }
 
             Instruction::LD_IMM_16_SP(val) => {
                 let sp_val = self.sp;
@@ -243,9 +286,13 @@ impl Cpu {
 
                 self.bus.write(val, low_byte);
                 self.bus.write(val.wrapping_add(1), high_byte);
+                Ok(20)
             }
 
-            Instruction::LD_SP_HL => self.sp = self.get_reg16(Reg16::HL),
+            Instruction::LD_SP_HL => {
+                self.sp = self.get_reg16(Reg16::HL);
+                Ok(8)
+            }
 
             Instruction::LD_HL_SP_e8(val) => {
                 let sp = self.sp;
@@ -270,11 +317,13 @@ impl Cpu {
                 // Calculate the 16-bit result
                 let result = sp.wrapping_add(val as i16 as u16);
                 self.set_reg16(Reg16::HL, result);
+                Ok(12)
             }
 
             Instruction::PUSH(src) => {
                 let val = self.get_reg16(src);
                 self.push_stack((val >> 8) as u8, (val & 0xFF) as u8);
+                Ok(16)
             }
 
             Instruction::POP(dst) => {
@@ -287,6 +336,7 @@ impl Cpu {
                 } else {
                     self.set_reg16(dst, val);
                 }
+                Ok(12)
             }
 
             Instruction::ADD(src) => {
@@ -300,6 +350,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::ADD_IMM(val) => {
@@ -312,6 +363,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(8)
             }
 
             Instruction::ADC(src) => {
@@ -330,6 +382,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::ADC_IMM(val) => {
@@ -346,6 +399,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(8)
             }
 
             Instruction::SUB(src) => {
@@ -359,6 +413,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::SUB_IMM(val) => {
@@ -371,6 +426,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(8)
             }
 
             Instruction::SBC(src) => {
@@ -389,6 +445,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::SBC_IMM(val) => {
@@ -405,6 +462,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
+                Ok(8)
             }
 
             Instruction::AND(src) => {
@@ -413,6 +471,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, true, false);
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::AND_IMM(val) => {
@@ -420,6 +479,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, true, false);
+                Ok(8)
             }
 
             Instruction::XOR(src) => {
@@ -428,6 +488,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::XOR_IMM(val) => {
@@ -435,6 +496,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
+                Ok(8)
             }
 
             Instruction::OR(src) => {
@@ -443,6 +505,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::OR_IMM(val) => {
@@ -450,6 +513,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
+                Ok(8)
             }
 
             Instruction::CP(src) => {
@@ -462,6 +526,7 @@ impl Cpu {
                 let c = self.a < val;
 
                 self.set_flags(z, n, h, c);
+                Ok(if src == Reg8::HLIndirect { 8 } else { 4 })
             }
 
             Instruction::CP_IMM(val) => {
@@ -473,6 +538,7 @@ impl Cpu {
                 let c = self.a < val;
 
                 self.set_flags(z, n, h, c);
+                Ok(8)
             }
 
             Instruction::INC_8(reg) => {
@@ -486,6 +552,7 @@ impl Cpu {
                 let c = (self.f & 0x10) != 0;
 
                 self.set_flags(z, n, h, c);
+                Ok(if reg == Reg8::HLIndirect { 12 } else { 4 })
             }
 
             Instruction::DEC_8(reg) => {
@@ -499,6 +566,7 @@ impl Cpu {
                 let c = (self.f & 0x10) != 0;
 
                 self.set_flags(z, n, h, c);
+                Ok(if reg == Reg8::HLIndirect { 12 } else { 4 })
             }
 
             Instruction::ADD_16(src) => {
@@ -513,6 +581,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.set_reg16(Reg16::HL, result);
+                Ok(8)
             }
 
             Instruction::ADD_16_SP_e8(val) => {
@@ -531,188 +600,186 @@ impl Cpu {
 
                 self.set_flags(false, false, h, c);
                 self.sp = result;
+                Ok(16)
             }
 
             Instruction::INC_16(reg) => {
                 let val = self.get_reg16(reg);
                 self.set_reg16(reg, val.wrapping_add(1));
+                Ok(8)
             }
 
             Instruction::DEC_16(reg) => {
                 let val = self.get_reg16(reg);
                 self.set_reg16(reg, val.wrapping_sub(1));
+                Ok(8)
             }
 
             Instruction::JP(cond, val) => {
                 if self.check_condition(cond) {
                     self.pc = val;
+                    Ok(16)
+                } else {
+                    Ok(12)
                 }
             }
 
-            Instruction::JP_HL => self.pc = self.get_reg16(Reg16::HL),
+            Instruction::JP_HL => {
+                self.pc = self.get_reg16(Reg16::HL);
+                Ok(4)
+            }
 
             Instruction::JR(cond, offset) => {
                 if self.check_condition(cond) {
-                    // Cast offset to i16 to handle negative numbers, then back to u16
                     self.pc = (self.pc as i16 + offset as i16) as u16;
+                    Ok(12)
+                } else {
+                    Ok(8)
                 }
             }
 
             Instruction::CALL(cond, val) => {
                 if self.check_condition(cond) {
-                    // Push PC onto the stack
                     let pc_bytes = self.pc.to_be_bytes();
                     self.push_stack(pc_bytes[0], pc_bytes[1]);
-
                     self.pc = val;
+                    Ok(24)
+                } else {
+                    Ok(12)
                 }
             }
 
             Instruction::RET(cond) => {
                 if self.check_condition(cond) {
-                    // Pop return address from the stack
-                    let low = self.bus.read(self.sp);
-                    self.sp = self.sp.wrapping_add(1);
-                    let high = self.bus.read(self.sp);
-                    self.sp = self.sp.wrapping_add(1);
-
+                    let (low, high) = self.pop_stack();
                     self.pc = ((high as u16) << 8) | (low as u16);
+                    // Special case: Conditional RET takes 20 cycles if taken, but RET (None) is always 16
+                    if cond == Condition::None {
+                        Ok(16)
+                    } else {
+                        Ok(20)
+                    }
+                } else {
+                    Ok(8)
                 }
             }
 
             Instruction::RETI => {
-                // Pop return address from the stack
-                let low = self.bus.read(self.sp);
-                self.sp = self.sp.wrapping_add(1);
-                let high = self.bus.read(self.sp);
-                self.sp = self.sp.wrapping_add(1);
-
+                let (low, high) = self.pop_stack();
                 self.pc = ((high as u16) << 8) | (low as u16);
-
-                // Enable interrupts
                 self.ime = true;
+                Ok(16)
             }
 
             Instruction::RST(val) => {
                 let pc_bytes = self.pc.to_be_bytes();
                 self.push_stack(pc_bytes[0], pc_bytes[1]);
                 self.pc = val as u16;
+                Ok(16)
             }
 
             Instruction::RLCA => {
                 let bit7 = (self.a >> 7) & 1;
-
                 self.a = (self.a << 1) | bit7;
-
                 self.set_flags(false, false, false, bit7 != 0);
+                Ok(4)
             }
 
             Instruction::RLA => {
                 let old_carry = if (self.f & 0x10) != 0 { 1 } else { 0 };
                 let bit7 = (self.a >> 7) & 1;
-
                 self.a = (self.a << 1) | old_carry;
-
                 self.set_flags(false, false, false, bit7 != 0);
+                Ok(4)
             }
 
             Instruction::RRCA => {
                 let bit0 = self.a & 0x01;
-
                 self.a = (self.a >> 1) | (bit0 << 7);
-
                 self.set_flags(false, false, false, bit0 != 0);
+                Ok(4)
             }
 
             Instruction::RRA => {
                 let old_carry = if (self.f & 0x10) != 0 { 1 } else { 0 };
-
                 let bit0 = self.a & 0x01;
-
                 self.a = (self.a >> 1) | (old_carry << 7);
-
                 self.set_flags(false, false, false, bit0 != 0);
+                Ok(4)
             }
 
             Instruction::DAA => {
                 let mut a = self.a;
                 let mut adjust = 0;
                 let mut carry = false;
-
                 if (self.f & 0x20) != 0 || (!(self.f & 0x40) != 0 && (a & 0x0F) > 9) {
                     adjust |= 0x06;
                 }
-
                 if (self.f & 0x10) != 0 || (!(self.f & 0x40) != 0 && a > 0x99) {
                     adjust |= 0x60;
                     carry = true;
                 }
-
                 if (self.f & 0x40) != 0 {
                     a = a.wrapping_sub(adjust);
                 } else {
                     a = a.wrapping_add(adjust);
                 }
-
                 let z = a == 0;
                 let n = (self.f & 0x40) != 0;
                 self.set_flags(z, n, false, carry);
                 self.a = a;
+                Ok(4)
             }
 
             Instruction::CPL => {
-                // Bitwise NOT
                 self.a = !self.a;
-
                 let z = (self.f & 0x80) != 0;
                 let c = (self.f & 0x10) != 0;
                 self.set_flags(z, true, true, c);
+                Ok(4)
             }
 
             Instruction::SCF => {
                 let z = (self.f & 0x80) != 0;
                 self.set_flags(z, false, false, true);
+                Ok(4)
             }
 
             Instruction::CCF => {
                 let z = (self.f & 0x80) != 0;
                 let old_c = (self.f & 0x10) != 0;
                 self.set_flags(z, false, false, !old_c);
+                Ok(4)
             }
 
             Instruction::PREFIX_CB(cb_opcode) => {
-                // Get category form bits 7-6
                 let category = cb_opcode >> 6;
-                // Get bit from bits 5-3
                 let bit = (cb_opcode >> 3) & 0x07;
-                // Get register from bits 2-0
                 let reg_code = cb_opcode & 0x07;
                 let reg = self.decode_cb_reg(reg_code);
 
                 match category {
                     0 => self.execute_cb_rotate_shift(bit, reg),
                     1 => {
-                        // BIT b, r (0x40 - 0x7F)
                         let val = self.get_reg8(reg);
                         let z = (val & (1 << bit)) == 0;
                         let c = (self.f & 0x10) != 0;
                         self.set_flags(z, false, true, c);
                     }
                     2 => {
-                        // RES b, r (0x80 - 0xBF)
                         let val = self.get_reg8(reg);
                         self.set_reg8(reg, val & !(1 << bit));
                     }
                     3 => {
-                        // SET b, r (0xC0 - 0xFF)
                         let val = self.get_reg8(reg);
                         self.set_reg8(reg, val | (1 << bit));
                     }
                     _ => unreachable!(),
                 }
+                // CB instructions take 8 cycles if register, 16 if [HL]
+                Ok(if reg == Reg8::HLIndirect { 16 } else { 8 })
             }
         }
-        Ok(())
     }
 
     // Read value stored in the specified 8-bit register
