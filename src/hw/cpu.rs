@@ -1,8 +1,9 @@
-use log::{debug, error, warn};
-use std::{fmt, fs};
+use log::{debug, warn};
+use std::fmt;
 
+use crate::hw::bus::Bus;
 use crate::hw::opcodes::{Condition, Instruction, Reg8, Reg16};
-use crate::utils::error::{GBError, GBResult};
+use crate::utils::error::GBResult;
 
 const IO_MEMORY_START: u16 = 0xFF00;
 
@@ -18,7 +19,7 @@ const IO_MEMORY_START: u16 = 0xFF00;
 /// `h` -> `H` part of the `HL` register
 /// `l` -> `L` part of the `HL` register
 /// `ime` -> interrupts enablement
-/// `memory` -> memory
+/// `memory` -> bus memory
 #[derive(Debug)]
 pub struct Cpu {
     pc: u16,
@@ -33,7 +34,7 @@ pub struct Cpu {
     l: u8,
     ime: bool,
     halted: bool,
-    pub memory: [u8; 65536],
+    pub bus: Bus,
 }
 
 impl fmt::Display for Cpu {
@@ -82,7 +83,10 @@ impl fmt::Display for Cpu {
 
 impl Cpu {
     // Initialize the cpu, setting `pc` to 0x100
-    pub fn new() -> Self {
+    pub fn new(rom_path: &str) -> Self {
+        let mut bus = Bus::new();
+        bus.load_rom(rom_path).expect("Failed to load ROM");
+
         Self {
             pc: 0x100,
             sp: 0,
@@ -96,30 +100,8 @@ impl Cpu {
             l: 0,
             ime: false,
             halted: false,
-            memory: [0; 65536],
+            bus,
         }
-    }
-
-    // Reads ROM file and puts it into memory
-    pub fn load_rom(&mut self, path: &str) -> GBResult<()> {
-        let buffer = fs::read(path)?;
-        let rom_size = buffer.len();
-
-        if rom_size > self.memory.len() {
-            error!(
-                "ROM ({}) is larger than memory space ({})",
-                rom_size,
-                self.memory.len()
-            );
-            return Err(GBError::OversizedROM);
-        }
-
-        // Copy the bytes into memory
-        self.memory[..rom_size].copy_from_slice(&buffer[..rom_size]);
-
-        debug!("ROM successfully loaded, read {} bytes", rom_size);
-
-        Ok(())
     }
 
     // Performs a CPU step
@@ -127,8 +109,8 @@ impl Cpu {
         // If halted, check for interrupts to wake up
         if self.halted {
             // Check if IME flag is not zero
-            let ie = self.read_mem(0xFFFF);
-            let if_flag = self.read_mem(0xFF0F);
+            let ie = self.bus.read(0xFFFF);
+            let if_flag = self.bus.read(0xFF0F);
 
             if (ie & if_flag) != 0 {
                 self.halted = false;
@@ -139,13 +121,13 @@ impl Cpu {
         }
 
         // Read 1B from memory at the current PC address
-        let opcode = self.read_mem(self.pc);
+        let opcode = self.bus.read(self.pc);
         self.pc += 1;
 
         // Decode the instruction read from memory
         // This gives an enclosure s.t. if the decode function needs to read more that it can do so
         let instr = Instruction::decode(opcode, &mut || {
-            let val = self.read_mem(self.pc);
+            let val = self.bus.read(self.pc);
             self.pc += 1;
             val
         });
@@ -184,70 +166,70 @@ impl Cpu {
 
             Instruction::LDH_A_IMM(val) => {
                 let address = IO_MEMORY_START | (val as u16);
-                self.a = self.read_mem(address);
+                self.a = self.bus.read(address);
             }
 
             Instruction::LDH_IMM_A(val) => {
                 let address = IO_MEMORY_START | (val as u16);
-                self.write_mem(address, self.a);
+                self.bus.write(address, self.a);
             }
 
             Instruction::LDH_A_C => {
                 let address = IO_MEMORY_START | (self.c as u16);
-                self.a = self.read_mem(address);
+                self.a = self.bus.read(address);
             }
 
             Instruction::LDH_C_A => {
                 let address = IO_MEMORY_START | (self.c as u16);
-                self.write_mem(address, self.a);
+                self.bus.write(address, self.a);
             }
 
-            Instruction::LD_A_IMM_16(val) => self.a = self.read_mem(val),
+            Instruction::LD_A_IMM_16(val) => self.a = self.bus.read(val),
 
-            Instruction::LD_IMM_16_A(val) => self.write_mem(val, self.a),
+            Instruction::LD_IMM_16_A(val) => self.bus.write(val, self.a),
 
             Instruction::LD_A_BC => {
                 let address = self.get_reg16(Reg16::BC);
-                self.a = self.read_mem(address);
+                self.a = self.bus.read(address);
             }
 
             Instruction::LD_A_DE => {
                 let address = self.get_reg16(Reg16::DE);
-                self.a = self.read_mem(address);
+                self.a = self.bus.read(address);
             }
 
             Instruction::LD_BC_A => {
                 let address = self.get_reg16(Reg16::BC);
-                self.write_mem(address, self.a);
+                self.bus.write(address, self.a);
             }
 
             Instruction::LD_DE_A => {
                 let address = self.get_reg16(Reg16::DE);
-                self.write_mem(address, self.a);
+                self.bus.write(address, self.a);
             }
 
             Instruction::LD_A_HLI => {
                 let hl = self.get_reg16(Reg16::HL);
-                self.a = self.read_mem(hl);
+                self.a = self.bus.read(hl);
                 self.set_reg16(Reg16::HL, hl.wrapping_add(1));
             }
 
             Instruction::LD_A_HLD => {
                 let hl = self.get_reg16(Reg16::HL);
-                self.a = self.read_mem(hl);
+                self.a = self.bus.read(hl);
                 self.set_reg16(Reg16::HL, hl.wrapping_sub(1));
             }
 
             Instruction::LD_HLI_A => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.set_reg16(Reg16::HL, hl.wrapping_add(1));
-                self.write_mem(hl, self.a);
+                self.bus.write(hl, self.a);
             }
 
             Instruction::LD_HLD_A => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.set_reg16(Reg16::HL, hl.wrapping_sub(1));
-                self.write_mem(hl, self.a);
+                self.bus.write(hl, self.a);
             }
 
             Instruction::LD_16_IMM(dst, val) => self.set_reg16(dst, val),
@@ -259,8 +241,8 @@ impl Cpu {
                 let low_byte = (sp_val & 0xFF) as u8;
                 let high_byte = (sp_val >> 8) as u8;
 
-                self.write_mem(val, low_byte);
-                self.write_mem(val.wrapping_add(1), high_byte);
+                self.bus.write(val, low_byte);
+                self.bus.write(val.wrapping_add(1), high_byte);
             }
 
             Instruction::LD_SP_HL => self.sp = self.get_reg16(Reg16::HL),
@@ -589,9 +571,9 @@ impl Cpu {
             Instruction::RET(cond) => {
                 if self.check_condition(cond) {
                     // Pop return address from the stack
-                    let low = self.read_mem(self.sp);
+                    let low = self.bus.read(self.sp);
                     self.sp = self.sp.wrapping_add(1);
-                    let high = self.read_mem(self.sp);
+                    let high = self.bus.read(self.sp);
                     self.sp = self.sp.wrapping_add(1);
 
                     self.pc = ((high as u16) << 8) | (low as u16);
@@ -600,9 +582,9 @@ impl Cpu {
 
             Instruction::RETI => {
                 // Pop return address from the stack
-                let low = self.read_mem(self.sp);
+                let low = self.bus.read(self.sp);
                 self.sp = self.sp.wrapping_add(1);
-                let high = self.read_mem(self.sp);
+                let high = self.bus.read(self.sp);
                 self.sp = self.sp.wrapping_add(1);
 
                 self.pc = ((high as u16) << 8) | (low as u16);
@@ -733,16 +715,6 @@ impl Cpu {
         Ok(())
     }
 
-    // Read 1B from the specified address in memory
-    fn read_mem(&self, addr: u16) -> u8 {
-        self.memory[addr as usize]
-    }
-
-    // Write 1B to the specified address in memory
-    fn write_mem(&mut self, addr: u16, val: u8) {
-        self.memory[addr as usize] = val;
-    }
-
     // Read value stored in the specified 8-bit register
     fn get_reg8(&self, reg: Reg8) -> u8 {
         match reg {
@@ -753,7 +725,7 @@ impl Cpu {
             Reg8::E => self.e,
             Reg8::H => self.h,
             Reg8::L => self.l,
-            Reg8::HLIndirect => self.read_mem(self.get_reg16(Reg16::HL)),
+            Reg8::HLIndirect => self.bus.read(self.get_reg16(Reg16::HL)),
         }
     }
 
@@ -767,7 +739,7 @@ impl Cpu {
             Reg8::E => self.e = val,
             Reg8::H => self.h = val,
             Reg8::L => self.l = val,
-            Reg8::HLIndirect => self.write_mem(self.get_reg16(Reg16::HL), val),
+            Reg8::HLIndirect => self.bus.write(self.get_reg16(Reg16::HL), val),
         }
     }
 
@@ -887,21 +859,21 @@ impl Cpu {
     fn push_stack(&mut self, high: u8, low: u8) {
         // Decrement SP, then write the high byte
         self.sp = self.sp.wrapping_sub(1);
-        self.memory[self.sp as usize] = high;
+        self.bus.write(self.sp, high);
 
         // Decrement SP again, then write the low byte
         self.sp = self.sp.wrapping_sub(1);
-        self.memory[self.sp as usize] = low;
+        self.bus.write(self.sp, low);
     }
 
     // Pop a value from the stack
     fn pop_stack(&mut self) -> (u8, u8) {
         // Increment SP, then read the low byte
-        let low = self.read_mem(self.sp);
+        let low = self.bus.read(self.sp);
         self.sp = self.sp.wrapping_add(1);
 
         // increment SP again, then read the high byte
-        let high = self.read_mem(self.sp);
+        let high = self.bus.read(self.sp);
         self.sp = self.sp.wrapping_add(1);
 
         (low, high)
