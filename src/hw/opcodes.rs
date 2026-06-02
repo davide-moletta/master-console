@@ -12,7 +12,7 @@ pub enum Reg8 {
 }
 
 /// Defines all 16 bit registers
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reg16 {
     BC,
     DE,
@@ -60,7 +60,7 @@ pub enum Instruction {
 
     // --- 8-bit load ---
 
-    // Load the contents of register 1 into register 2
+    // Load the contents of register 2 into register 1
     LD_8(Reg8, Reg8),
     // Load the 8-bit immediate operand into register
     LD_8_IMM(Reg8, u8),
