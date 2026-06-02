@@ -105,22 +105,18 @@ impl Cpu {
     }
 
     // Performs a CPU step
-    pub fn step(&mut self) -> GBResult<()> {
-        // If halted, check for interrupts to wake up
-        if self.halted {
-            // Check if IME flag is not zero
-            let ie = self.bus.read(0xFFFF);
-            let if_flag = self.bus.read(0xFF0F);
+    pub fn step(&mut self) -> GBResult<u32> {
+        // Handle Interrupts
+        let interrupt_cycles = self.handle_interrupts();
 
-            if (ie & if_flag) != 0 {
-                self.halted = false;
-            } else {
-                // Still halted
-                return Ok(());
-            }
+        // Handle HALT state
+        if self.halted {
+            // While halted, the CPU "idles" for 4 cycles at a time
+            // until an interrupt is triggered.
+            return Ok(4 + interrupt_cycles);
         }
 
-        // Read 1B from memory at the current PC address
+        // Fetch opcode
         let opcode = self.bus.read(self.pc);
         self.pc += 1;
 
@@ -136,9 +132,55 @@ impl Cpu {
 
         // Execute the decoded instruction
         match self.execute(instr) {
-            Ok(_) => Ok(()),
+            Ok(cycles) => Ok(cycles + interrupt_cycles),
             Err(e) => Err(e),
         }
+    }
+
+    fn handle_interrupts(&mut self) -> u32 {
+        let ie = self.bus.read(0xFFFF); // Interrupt Enable
+        let if_flag = self.bus.read(0xFF0F); // Interrupt Flag
+        let pending = ie & if_flag;
+
+        if pending == 0 {
+            return 0;
+        }
+
+        // Any pending interrupt wakes the CPU, even if IME is disabled
+        if self.halted {
+            self.halted = false;
+        }
+
+        // If Interrupt Master Enable is off, don't jump to handlers
+        if !self.ime {
+            return 0;
+        }
+
+        // Check bits 0-4 for VBlank, LCD Stat, Timer, Serial, Joypad
+        for i in 0..5 {
+            if (pending & (1 << i)) != 0 {
+                self.service_interrupt(i);
+                return 20;
+            }
+        }
+
+        0
+    }
+
+    fn service_interrupt(&mut self, interrupt_id: u8) {
+        self.ime = false; // Disable interrupts while handling one
+
+        // Clear the specific interrupt flag we are handling
+        let mut if_flag = self.bus.read(0xFF0F);
+        if_flag &= !(1 << interrupt_id);
+        self.bus.write(0xFF0F, if_flag);
+
+        // push current PC to stack
+        let pc_bytes = self.pc.to_be_bytes();
+        self.push_stack(pc_bytes[0], pc_bytes[1]);
+
+        // Jump to the hardcoded Interrupt Vector
+        self.pc = 0x0040 + (interrupt_id as u16 * 8);
     }
 
     // Simulate the decoded instruction performing the same operation
