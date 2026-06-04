@@ -1,5 +1,5 @@
 /// Defines all 8 bit registers
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reg8 {
     A,
     B,
@@ -23,7 +23,7 @@ pub enum Reg16 {
 
 /// Represents the conditions used by branching instructions (JP, JR, CALL, RET)
 /// These conditions only check the Zero (Z) and Carry (C) flags
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Condition {
     /// Always jump
     None,
