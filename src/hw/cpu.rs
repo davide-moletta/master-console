@@ -1,4 +1,4 @@
-use log::{debug, warn};
+use log::warn;
 use std::fmt;
 
 use crate::hw::bus::{self, Bus};
@@ -88,15 +88,16 @@ impl Cpu {
 
         Self {
             pc: 0x100,
-            sp: 0,
-            a: 0,
-            f: 0,
-            b: 0,
-            c: 0,
-            d: 0,
-            e: 0,
-            h: 0,
-            l: 0,
+            // TODO this is the setup after boot rom, add real in the future
+            sp: 0xFFFE, // Standard stack pointer start
+            a: 0x01,    // Standard boot value
+            f: 0xB0,    // Standard boot value
+            b: 0x00,    // Standard boot value
+            c: 0x13,    // Standard boot value
+            d: 0x00,    // Standard boot value
+            e: 0xD8,    // Standard boot value
+            h: 0x01,    // Standard boot value
+            l: 0x4D,    // Standard boot value
             ime: false,
             halted: false,
             bus,
@@ -128,7 +129,7 @@ impl Cpu {
             val
         });
 
-        debug!("Performing instruction: {:?} - CPU state: {}", instr, self);
+        // debug!("Performing instruction: {:?} - CPU state: {}", instr, self);
 
         // Execute the decoded instruction
         let cycles = self.execute(instr);
