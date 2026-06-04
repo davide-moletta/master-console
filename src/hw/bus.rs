@@ -71,6 +71,11 @@ impl Bus {
         Ok(())
     }
 
+    /// Helper to read the frame buffer
+    pub fn get_frame(&self) -> [u32; ppu::SCREEN_WIDTH * ppu::SCREEN_HEIGHT] {
+        self.ppu.get_frame()
+    }
+
     /// Helper to tick the [`Timer`]
     pub fn tick(&mut self, cycles: u32) {
         // Advance the timer
@@ -118,7 +123,7 @@ impl Bus {
             ppu::STAT_ADDRESS => self.ppu.write(addr, val),
             ppu::SCY_ADDRESS => self.ppu.write(addr, val),
             ppu::SCX_ADDRESS => self.ppu.write(addr, val),
-            ppu::LY_ADDRESS => self.ppu.write(addr, val),
+            ppu::LY_ADDRESS => { /* Do nothing, LY is read-only for the CPU */ }
             ppu::LYC_ADDRESS => self.ppu.write(addr, val),
             ppu::BGP_ADDRESS => self.ppu.write(addr, val),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize] = val,
