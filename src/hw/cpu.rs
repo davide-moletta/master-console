@@ -1,7 +1,7 @@
 use log::{debug, warn};
 use std::fmt;
 
-use crate::hw::bus::Bus;
+use crate::hw::bus::{self, Bus};
 use crate::hw::opcodes::{Condition, Instruction, Reg8, Reg16};
 use crate::utils::error::GBResult;
 
@@ -113,6 +113,7 @@ impl Cpu {
         if self.halted {
             // While halted, the CPU "idles" for 4 cycles at a time
             // until an interrupt is triggered.
+            self.bus.tick(4);
             return Ok(4 + interrupt_cycles);
         }
 
@@ -131,16 +132,16 @@ impl Cpu {
         debug!("Performing instruction: {:?} - CPU state: {}", instr, self);
 
         // Execute the decoded instruction
-        match self.execute(instr) {
-            Ok(cycles) => Ok(cycles + interrupt_cycles),
-            Err(e) => Err(e),
-        }
+        let cycles = self.execute(instr)?;
+        self.bus.tick(cycles);
+
+        Ok(cycles + interrupt_cycles)
     }
 
     fn handle_interrupts(&mut self) -> u32 {
-        let ie = self.bus.read(0xFFFF); // Interrupt Enable
-        let if_flag = self.bus.read(0xFF0F); // Interrupt Flag
-        let pending = ie & if_flag;
+        let ie_reg = self.bus.read(bus::IE_ADDRESS);
+        let if_reg = self.bus.read(bus::IF_ADDRESS);
+        let pending = ie_reg & if_reg;
 
         if pending == 0 {
             return 0;
@@ -170,16 +171,13 @@ impl Cpu {
     fn service_interrupt(&mut self, interrupt_id: u8) {
         self.ime = false; // Disable interrupts while handling one
 
-        // Clear the specific interrupt flag we are handling
-        let mut if_flag = self.bus.read(0xFF0F);
-        if_flag &= !(1 << interrupt_id);
-        self.bus.write(0xFF0F, if_flag);
+        // Clear the flag in the bus field
+        let if_reg = self.bus.read(bus::IF_ADDRESS);
+        self.bus
+            .write(bus::IF_ADDRESS, if_reg & !(1 << interrupt_id));
 
-        // push current PC to stack
         let pc_bytes = self.pc.to_be_bytes();
         self.push_stack(pc_bytes[0], pc_bytes[1]);
-
-        // Jump to the hardcoded Interrupt Vector
         self.pc = 0x0040 + (interrupt_id as u16 * 8);
     }
 

@@ -1,13 +1,21 @@
-/// DIV ($FF04): Divider Register. Always counting.
-/// TIMA ($FF05): Timer Counter. The one that triggers interrupts.
-/// TMA ($FF06): Timer Modulo. When TIMA overflows, it resets to this value.
-/// TAC ($FF07): Timer Control. Sets the speed and turns the timer on/off.
+const DIV_ADDRESS: u16 = 0xFF04;
+const TIMA_ADDRESS: u16 = 0xFF05;
+const TMA_ADDRESS: u16 = 0xFF06;
+const TAC_ADDRESS: u16 = 0xFF07;
+
+/// Timer registers for the cpu
+/// `div_internal` -> divider register, always counting
+/// `tima` -> timer counter, used to trigger interrupts
+/// `tma` -> timer modulo, when `tima`` overflows, it resets to this value
+/// `tac -> timer control, sets the speed and turns the timer on/off
+/// `interrupt_request` -> signals if there is an interrupt request
+#[derive(Debug)]
 pub struct Timer {
-    div_internal: u16, // Internal 16-bit counter
+    div_internal: u16,
     tima: u8,
     tma: u8,
     tac: u8,
-    pub interrupt_request: bool,
+    interrupt_request: bool,
 }
 
 impl Timer {
@@ -21,14 +29,25 @@ impl Timer {
         }
     }
 
+    /// Helper to read the interrupt request flag
+    pub fn get_interrupt(&self) -> bool {
+        self.interrupt_request
+    }
+
+    /// Helper to set the interrupt request flag
+    pub fn set_interrupt(&mut self, flag: bool) {
+        self.interrupt_request = flag;
+    }
+
+    /// Simulates a tick in the [`crate::hw::cpu::Cpu`]
     pub fn tick(&mut self, cycles: u32) {
-        // 1. Always increment the internal DIV counter
+        // Increment the `div_internal` counter
         let old_div_internal = self.div_internal;
         self.div_internal = self.div_internal.wrapping_add(cycles as u16);
 
-        // 2. Check if TIMA should increment (TAC bit 2 is "Timer Enable")
+        // Check if `tima` should increment (`tac` bit 2 is "Timer Enable")
         if (self.tac & 0x04) != 0 {
-            // TAC bits 0-1 define frequency:
+            // `tac` bits 0-1 define frequency:
             // 00: 4096 Hz   (Internal bit 9)
             // 01: 262144 Hz (Internal bit 3)
             // 10: 65536 Hz  (Internal bit 5)
@@ -40,8 +59,7 @@ impl Timer {
                 _ => 9,
             };
 
-            // Logic: TIMA increments when the specific bit in internal DIV
-            // changes from 1 to 0 (falling edge)
+            // `tima` increments when the specific bit in `div_internal` changes from 1 to 0
             let old_bit = (old_div_internal >> bit_to_check) & 0x01;
             let new_bit = (self.div_internal >> bit_to_check) & 0x01;
 
@@ -58,23 +76,24 @@ impl Timer {
         }
     }
 
-    // Helpers for Bus to read/write registers
+    /// Helper for [`crate::hw::bus::Bus`] to read [`Timer`] registers
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            0xFF04 => (self.div_internal >> 8) as u8, // Top 8 bits is the DIV register
-            0xFF05 => self.tima,
-            0xFF06 => self.tma,
-            0xFF07 => self.tac,
+            DIV_ADDRESS => (self.div_internal >> 8) as u8,
+            TIMA_ADDRESS => self.tima,
+            TMA_ADDRESS => self.tma,
+            TAC_ADDRESS => self.tac,
             _ => 0xFF,
         }
     }
 
+    /// Helper for [`crate::hw::bus::Bus`] to write [`Timer`] registers
     pub fn write(&mut self, addr: u16, val: u8) {
         match addr {
-            0xFF04 => self.div_internal = 0, // Any write to DIV resets it to 0
-            0xFF05 => self.tima = val,
-            0xFF06 => self.tma = val,
-            0xFF07 => self.tac = val,
+            DIV_ADDRESS => self.div_internal = 0,
+            TIMA_ADDRESS => self.tima = val,
+            TMA_ADDRESS => self.tma = val,
+            TAC_ADDRESS => self.tac = val,
             _ => {}
         }
     }
