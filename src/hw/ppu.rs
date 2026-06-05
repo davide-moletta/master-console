@@ -51,6 +51,7 @@ const BLACK: u32 = 0xFF000000;
 /// `vblank_interrupt` -> signals if [Mode::VBlank] was requested
 /// `obp0` & `obp1` -> palette registers for sprites
 /// `wx` & `wy` -> window register to mange background
+/// `bg_line_color_indices` -> used for priority
 #[derive(Debug)]
 pub struct Ppu {
     vram: [u8; VRAM_SIZE],
@@ -70,6 +71,7 @@ pub struct Ppu {
     obp1: u8,
     wy: u8,
     wx: u8,
+    bg_line_color_indices: [u8; OAM_SIZE],
 }
 
 impl Ppu {
@@ -94,6 +96,7 @@ impl Ppu {
             obp1: 0,
             wy: 0,
             wx: 0,
+            bg_line_color_indices: [0; OAM_SIZE],
         }
     }
 
@@ -136,6 +139,7 @@ impl Ppu {
                     }
                 }
             }
+
             Mode::VBlank => {
                 if self.ticks >= 456 {
                     self.ticks -= 456;
@@ -233,8 +237,8 @@ impl Ppu {
                 (bg_tile_map_base, bg_x, bg_y)
             };
 
-            let tile_y = y_pos / 8;
-            let tile_x = x_pos / 8;
+            let tile_y = (y_pos / 8) % 32;
+            let tile_x = (x_pos / 8) % 32;
             let pixel_y_in_tile = y_pos % 8;
             let pixel_x_in_tile = x_pos % 8;
 
@@ -264,6 +268,7 @@ impl Ppu {
             let lsb = (byte1 >> bit) & 0x01;
             let msb = (byte2 >> bit) & 0x01;
             let color_id = (msb << 1) | lsb;
+            self.bg_line_color_indices[x as usize] = color_id;
 
             let color = self.get_color(color_id);
             let buffer_idx = (self.ly as usize * SCREEN_WIDTH) + x as usize;
@@ -318,6 +323,10 @@ impl Ppu {
 
                     // 0 is transparent for sprites
                     if color_id == 0 {
+                        continue;
+                    }
+                    let bg_priority = (attributes & 0x80) != 0;
+                    if bg_priority && self.bg_line_color_indices[pixel_x as usize] != 0 {
                         continue;
                     }
 
