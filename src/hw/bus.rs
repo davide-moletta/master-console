@@ -1,6 +1,7 @@
 use log::debug;
 use std::fs;
 
+use crate::hw::ppu::{self, Ppu};
 use crate::hw::timer::Timer;
 use crate::utils::error::GBResult;
 
@@ -9,10 +10,6 @@ const START: u16 = 0x0000;
 const BOOT_ROM_SIZE: usize = 256;
 
 const ROM_END: u16 = 0x7FFF;
-
-const VRAM_SIZE: usize = 8192;
-const VRAM_START: u16 = 0x8000;
-const VRAM_END: u16 = 0x9FFF;
 
 const WRAM_SIZE: usize = 8192;
 const WRAM_START: u16 = 0xC000;
@@ -31,10 +28,10 @@ pub const IE_ADDRESS: u16 = 0xFFFF;
 /// Simulates the memory map of Gameboy
 /// `boot_rom` -> boot rom
 /// `rom` -> cartridge rom
-/// `vram` -> video ram
 /// `wram` -> work ram
 /// `hram` -> high ram
-/// `timer` -> holds the timers for the [`crate::hw::cpu::Cpu`]
+/// `timer` -> holds the [`Timer`] for the [`crate::hw::cpu::Cpu`]
+/// `ppu` -> holds the [`Ppu`] to render the screen
 /// `if_reg` -> interrupt flag
 /// `ie_reg` -> interrupt enable
 #[derive(Debug)]
@@ -42,10 +39,10 @@ pub const IE_ADDRESS: u16 = 0xFFFF;
 pub struct Bus {
     boot_rom: [u8; BOOT_ROM_SIZE],
     rom: Vec<u8>,
-    vram: [u8; VRAM_SIZE],
     wram: [u8; WRAM_SIZE],
     hram: [u8; HRAM_SIZE],
     timer: Timer,
+    ppu: Ppu,
     if_reg: u8,
     ie_reg: u8,
 }
@@ -55,10 +52,10 @@ impl Bus {
         Self {
             boot_rom: [0u8; BOOT_ROM_SIZE],
             rom: Vec::new(),
-            vram: [0u8; VRAM_SIZE],
             wram: [0u8; WRAM_SIZE],
             hram: [0u8; HRAM_SIZE],
             timer: Timer::new(),
+            ppu: Ppu::new(),
             if_reg: 0,
             ie_reg: 0,
         }
@@ -74,6 +71,11 @@ impl Bus {
         Ok(())
     }
 
+    /// Helper to read the frame buffer
+    pub fn get_frame(&self) -> [u32; ppu::SCREEN_WIDTH * ppu::SCREEN_HEIGHT] {
+        self.ppu.get_frame()
+    }
+
     /// Helper to tick the [`Timer`]
     pub fn tick(&mut self, cycles: u32) {
         // Advance the timer
@@ -84,25 +86,46 @@ impl Bus {
             self.if_reg |= 0x04;
             self.timer.set_interrupt(false);
         }
+
+        self.ppu.tick(cycles);
+        if self.ppu.get_interrupt() {
+            self.if_reg |= 0x01;
+            self.ppu.set_interrupt(false);
+        }
     }
 
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
             START..=ROM_END if (addr as usize) < self.rom.len() => self.rom[addr as usize],
-            VRAM_START..=VRAM_END => self.vram[(addr - VRAM_START) as usize],
+            ppu::VRAM_START..=ppu::VRAM_END => self.ppu.read(addr),
+            ppu::OAM_START..=ppu::OAM_END => self.ppu.read(addr),
+            ppu::LCDC_ADDRESS => self.ppu.read(addr),
+            ppu::STAT_ADDRESS => self.ppu.read(addr),
+            ppu::SCY_ADDRESS => self.ppu.read(addr),
+            ppu::SCX_ADDRESS => self.ppu.read(addr),
+            ppu::LY_ADDRESS => self.ppu.read(addr),
+            ppu::LYC_ADDRESS => self.ppu.read(addr),
+            ppu::BGP_ADDRESS => self.ppu.read(addr),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize],
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize],
             TIMER_START..=TIMER_END => self.timer.read(addr),
             IF_ADDRESS => self.if_reg,
             IE_ADDRESS => self.ie_reg,
-            0xFF44 => 0x90, // TODO hardcode VBlank so loops work
             _ => 0xFF,
         }
     }
 
     pub fn write(&mut self, addr: u16, val: u8) {
         match addr {
-            VRAM_START..=VRAM_END => self.vram[(addr - VRAM_START) as usize] = val,
+            ppu::VRAM_START..=ppu::VRAM_END => self.ppu.write(addr, val),
+            ppu::OAM_START..=ppu::OAM_END => self.ppu.write(addr, val),
+            ppu::LCDC_ADDRESS => self.ppu.write(addr, val),
+            ppu::STAT_ADDRESS => self.ppu.write(addr, val),
+            ppu::SCY_ADDRESS => self.ppu.write(addr, val),
+            ppu::SCX_ADDRESS => self.ppu.write(addr, val),
+            ppu::LY_ADDRESS => { /* Do nothing, LY is read-only for the CPU */ }
+            ppu::LYC_ADDRESS => self.ppu.write(addr, val),
+            ppu::BGP_ADDRESS => self.ppu.write(addr, val),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize] = val,
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize] = val,
             TIMER_START..=TIMER_END => self.timer.write(addr, val),
