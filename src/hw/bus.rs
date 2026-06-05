@@ -106,6 +106,8 @@ impl Bus {
             ppu::LY_ADDRESS => self.ppu.read(addr),
             ppu::LYC_ADDRESS => self.ppu.read(addr),
             ppu::BGP_ADDRESS => self.ppu.read(addr),
+            ppu::OBP0_ADDRESS => self.ppu.read(addr),
+            ppu::OBP1_ADDRESS => self.ppu.read(addr),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize],
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize],
             TIMER_START..=TIMER_END => self.timer.read(addr),
@@ -126,6 +128,8 @@ impl Bus {
             ppu::LY_ADDRESS => { /* Do nothing, LY is read-only for the CPU */ }
             ppu::LYC_ADDRESS => self.ppu.write(addr, val),
             ppu::BGP_ADDRESS => self.ppu.write(addr, val),
+            ppu::OBP0_ADDRESS => self.ppu.write(addr, val),
+            ppu::OBP1_ADDRESS => self.ppu.write(addr, val),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize] = val,
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize] = val,
             TIMER_START..=TIMER_END => self.timer.write(addr, val),
