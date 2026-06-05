@@ -26,6 +26,8 @@ const JOYPAD_ADDRESS: u16 = 0xFF00;
 const TIMER_START: u16 = 0xFF04;
 const TIMER_END: u16 = 0xFF07;
 
+const DMA_ADDRESS: u16 = 0xFF46;
+
 pub const IF_ADDRESS: u16 = 0xFF0F;
 pub const IE_ADDRESS: u16 = 0xFFFF;
 
@@ -151,6 +153,13 @@ impl Bus {
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize] = val,
             JOYPAD_ADDRESS => self.joypad.write(val),
             TIMER_START..=TIMER_END => self.timer.write(addr, val),
+            DMA_ADDRESS => {
+                let source_base = (val as u16) << 8;
+                for i in 0..160 {
+                    let data = self.read(source_base + i);
+                    self.ppu.write(0xFE00 + i, data);
+                }
+            }
             IF_ADDRESS => self.if_reg = val,
             IE_ADDRESS => self.ie_reg = val,
             _ => {}
