@@ -2,6 +2,7 @@ use log::debug;
 use std::fs;
 
 use crate::hw::cartridge::{self, Cartridge};
+use crate::hw::joypad::{self, Joypad};
 use crate::hw::ppu::{self, Ppu};
 use crate::hw::timer::Timer;
 use crate::utils::error::GBResult;
@@ -20,6 +21,8 @@ const HRAM_SIZE: usize = 127;
 const HRAM_START: u16 = 0xFF80;
 const HRAM_END: u16 = 0xFFFE;
 
+const JOYPAD_ADDRESS: u16 = 0xFF00;
+
 const TIMER_START: u16 = 0xFF04;
 const TIMER_END: u16 = 0xFF07;
 
@@ -33,6 +36,7 @@ pub const IE_ADDRESS: u16 = 0xFFFF;
 /// `hram` -> high ram
 /// `timer` -> holds the [`Timer`] for the [`crate::hw::cpu::Cpu`]
 /// `ppu` -> holds the [`Ppu`] to render the screen
+/// `joypad` -> holds the [`Joypad`] to interact with user
 /// `if_reg` -> interrupt flag
 /// `ie_reg` -> interrupt enable
 #[derive(Debug)]
@@ -44,6 +48,7 @@ pub struct Bus {
     hram: [u8; HRAM_SIZE],
     timer: Timer,
     ppu: Ppu,
+    joypad: Joypad,
     if_reg: u8,
     ie_reg: u8,
 }
@@ -57,6 +62,7 @@ impl Bus {
             hram: [0u8; HRAM_SIZE],
             timer: Timer::new(),
             ppu: Ppu::new(),
+            joypad: Joypad::new(),
             if_reg: 0,
             ie_reg: 0,
         }
@@ -75,6 +81,11 @@ impl Bus {
     /// Helper to read the frame buffer
     pub fn get_frame(&self) -> [u32; ppu::SCREEN_WIDTH * ppu::SCREEN_HEIGHT] {
         self.ppu.get_frame()
+    }
+
+    /// Helper to interact with joypad
+    pub fn set_button(&mut self, button: joypad::Buttons, val: bool) {
+        self.joypad.set_button(button, val)
     }
 
     /// Helper to tick the [`Timer`]
@@ -112,6 +123,7 @@ impl Bus {
             ppu::OBP1_ADDRESS => self.ppu.read(addr),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize],
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize],
+            JOYPAD_ADDRESS => self.joypad.read(),
             TIMER_START..=TIMER_END => self.timer.read(addr),
             IF_ADDRESS => self.if_reg,
             IE_ADDRESS => self.ie_reg,
@@ -137,6 +149,7 @@ impl Bus {
             ppu::OBP1_ADDRESS => self.ppu.write(addr, val),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize] = val,
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize] = val,
+            JOYPAD_ADDRESS => self.joypad.write(val),
             TIMER_START..=TIMER_END => self.timer.write(addr, val),
             IF_ADDRESS => self.if_reg = val,
             IE_ADDRESS => self.ie_reg = val,

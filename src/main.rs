@@ -6,6 +6,7 @@ use minifb::{Key, Scale, Window, WindowOptions};
 use std::time::{Duration, Instant};
 
 use hw::cpu::Cpu;
+use hw::joypad::Buttons;
 use hw::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
 
 const TEST_ROM_PATH: &str = "hello.gb";
@@ -39,6 +40,21 @@ fn main() {
     // Start loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let frame_start_time = Instant::now();
+
+        // Update Joypad state based on keyboard
+        cpu.bus.set_button(Buttons::Up, window.is_key_down(Key::Up));
+        cpu.bus
+            .set_button(Buttons::Down, window.is_key_down(Key::Down));
+        cpu.bus
+            .set_button(Buttons::Left, window.is_key_down(Key::Left));
+        cpu.bus
+            .set_button(Buttons::Right, window.is_key_down(Key::Right));
+        cpu.bus.set_button(Buttons::A, window.is_key_down(Key::Z));
+        cpu.bus.set_button(Buttons::B, window.is_key_down(Key::X));
+        cpu.bus
+            .set_button(Buttons::Start, window.is_key_down(Key::Enter));
+        cpu.bus
+            .set_button(Buttons::Select, window.is_key_down(Key::Backspace));
 
         // Run the CPU for one frame's worth of cycles
         let mut cycles_this_frame = 0;
