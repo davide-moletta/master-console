@@ -27,6 +27,8 @@ pub const LYC_ADDRESS: u16 = 0xFF45;
 pub const BGP_ADDRESS: u16 = 0xFF47;
 pub const OBP0_ADDRESS: u16 = 0xFF48;
 pub const OBP1_ADDRESS: u16 = 0xFF49;
+pub const WY_ADDRESS: u16 = 0xFF4A;
+pub const WX_ADDRESS: u16 = 0xFF4B;
 
 const WHITE: u32 = 0xFFFFFFFF;
 const LGREY: u32 = 0xFFAAAAAA;
@@ -48,6 +50,7 @@ const BLACK: u32 = 0xFF000000;
 /// `frame_buffer` -> screen's pixels
 /// `vblank_interrupt` -> signals if [Mode::VBlank] was requested
 /// `obp0` & `obp1` -> palette registers for sprites
+/// `wx` & `wy` -> window register to mange background
 #[derive(Debug)]
 pub struct Ppu {
     vram: [u8; VRAM_SIZE],
@@ -65,6 +68,8 @@ pub struct Ppu {
     vblank_interrupt: bool,
     obp0: u8,
     obp1: u8,
+    wy: u8,
+    wx: u8,
 }
 
 impl Ppu {
@@ -87,6 +92,8 @@ impl Ppu {
             vblank_interrupt: false,
             obp0: 0,
             obp1: 0,
+            wy: 0,
+            wx: 0,
         }
     }
 
@@ -189,24 +196,46 @@ impl Ppu {
 
     /// Renders a line for the display
     pub fn render_scanline(&mut self) {
-        if (self.lcdc & 0x01) == 0 {
-            return;
-        }
+        // Bit 0 of `lcdc` acts as a master enable for the BG and Window on DMG
+        let bg_window_enable = (self.lcdc & 0x01) != 0;
+        let window_enable = (self.lcdc & 0x20) != 0 && self.ly >= self.wy;
 
-        let tile_map_base: u16 = if (self.lcdc & 0x08) != 0 {
+        let bg_tile_map_base: u16 = if (self.lcdc & 0x08) != 0 {
             0x9C00
         } else {
             0x9800
         };
+
+        let win_tile_map_base: u16 = if (self.lcdc & 0x40) != 0 {
+            0x9C00
+        } else {
+            0x9800
+        };
+
         let use_unsigned = (self.lcdc & 0x10) != 0;
 
-        let y_pos = self.ly.wrapping_add(self.scy);
-        let tile_y = (y_pos / 8) as u16;
-        let pixel_y_in_tile = y_pos % 8;
-
         for x in 0..SCREEN_WIDTH as u8 {
-            let x_pos = x.wrapping_add(self.scx);
-            let tile_x = (x_pos / 8) as u16;
+            // Determine if current pixel belongs to the Window or Background
+            let is_window = window_enable && x + 7 >= self.wx;
+
+            let (tile_map_base, x_pos, y_pos) = if is_window {
+                let win_x = (x + 7 - self.wx) as u16;
+                let win_y = (self.ly - self.wy) as u16;
+                (win_tile_map_base, win_x, win_y)
+            } else {
+                if !bg_window_enable {
+                    let buffer_idx = (self.ly as usize * SCREEN_WIDTH) + x as usize;
+                    self.frame_buffer[buffer_idx] = WHITE;
+                    continue;
+                }
+                let bg_x = x.wrapping_add(self.scx) as u16;
+                let bg_y = self.ly.wrapping_add(self.scy) as u16;
+                (bg_tile_map_base, bg_x, bg_y)
+            };
+
+            let tile_y = y_pos / 8;
+            let tile_x = x_pos / 8;
+            let pixel_y_in_tile = y_pos % 8;
             let pixel_x_in_tile = x_pos % 8;
 
             // Get Tile ID directly from vram array
@@ -225,7 +254,7 @@ impl Ppu {
             };
 
             // Calculate "Relative" index for the pixel data
-            let vram_index = (tile_data_addr - 0x8000) + (pixel_y_in_tile as u16 * 2);
+            let vram_index = (tile_data_addr - 0x8000) + (pixel_y_in_tile * 2);
 
             // Fetch bytes directly from array
             let byte1 = self.vram[vram_index as usize];
@@ -320,6 +349,8 @@ impl Ppu {
             BGP_ADDRESS => self.bgp,
             OBP0_ADDRESS => self.obp0,
             OBP1_ADDRESS => self.obp1,
+            WY_ADDRESS => self.wy,
+            WX_ADDRESS => self.wx,
             _ => 0xFF,
         }
     }
@@ -337,6 +368,8 @@ impl Ppu {
             BGP_ADDRESS => self.bgp = val,
             OBP0_ADDRESS => self.obp0 = val,
             OBP1_ADDRESS => self.obp1 = val,
+            WY_ADDRESS => self.wy = val,
+            WX_ADDRESS => self.wx = val,
             _ => {}
         }
     }
