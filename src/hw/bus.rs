@@ -1,6 +1,7 @@
 use log::debug;
 use std::fs;
 
+use crate::hw::cartridge::{self, Cartridge};
 use crate::hw::ppu::{self, Ppu};
 use crate::hw::timer::Timer;
 use crate::utils::error::GBResult;
@@ -38,7 +39,7 @@ pub const IE_ADDRESS: u16 = 0xFFFF;
 #[allow(dead_code)]
 pub struct Bus {
     boot_rom: [u8; BOOT_ROM_SIZE],
-    rom: Vec<u8>,
+    rom: Cartridge,
     wram: [u8; WRAM_SIZE],
     hram: [u8; HRAM_SIZE],
     timer: Timer,
@@ -51,7 +52,7 @@ impl Bus {
     pub fn new() -> Self {
         Self {
             boot_rom: [0u8; BOOT_ROM_SIZE],
-            rom: Vec::new(),
+            rom: Cartridge::new(vec![0; cartridge::RAM_SIZE]),
             wram: [0u8; WRAM_SIZE],
             hram: [0u8; HRAM_SIZE],
             timer: Timer::new(),
@@ -65,7 +66,7 @@ impl Bus {
         let buffer = fs::read(rom_path)?;
         let rom_size = buffer.len();
 
-        self.rom = buffer;
+        self.rom = Cartridge::new(buffer);
 
         debug!("ROM successfully loaded into Bus, read {} bytes", rom_size);
         Ok(())
@@ -96,7 +97,8 @@ impl Bus {
 
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            START..=ROM_END if (addr as usize) < self.rom.len() => self.rom[addr as usize],
+            START..=ROM_END => self.rom.read(addr),
+            cartridge::RAM_START..=cartridge::RAM_END => self.rom.read(addr),
             ppu::VRAM_START..=ppu::VRAM_END => self.ppu.read(addr),
             ppu::OAM_START..=ppu::OAM_END => self.ppu.read(addr),
             ppu::LCDC_ADDRESS => self.ppu.read(addr),
@@ -106,6 +108,8 @@ impl Bus {
             ppu::LY_ADDRESS => self.ppu.read(addr),
             ppu::LYC_ADDRESS => self.ppu.read(addr),
             ppu::BGP_ADDRESS => self.ppu.read(addr),
+            ppu::OBP0_ADDRESS => self.ppu.read(addr),
+            ppu::OBP1_ADDRESS => self.ppu.read(addr),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize],
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize],
             TIMER_START..=TIMER_END => self.timer.read(addr),
@@ -117,6 +121,9 @@ impl Bus {
 
     pub fn write(&mut self, addr: u16, val: u8) {
         match addr {
+            START..=ROM_END | cartridge::RAM_START..=cartridge::RAM_END => {
+                self.rom.write(addr, val)
+            }
             ppu::VRAM_START..=ppu::VRAM_END => self.ppu.write(addr, val),
             ppu::OAM_START..=ppu::OAM_END => self.ppu.write(addr, val),
             ppu::LCDC_ADDRESS => self.ppu.write(addr, val),
@@ -126,6 +133,8 @@ impl Bus {
             ppu::LY_ADDRESS => { /* Do nothing, LY is read-only for the CPU */ }
             ppu::LYC_ADDRESS => self.ppu.write(addr, val),
             ppu::BGP_ADDRESS => self.ppu.write(addr, val),
+            ppu::OBP0_ADDRESS => self.ppu.write(addr, val),
+            ppu::OBP1_ADDRESS => self.ppu.write(addr, val),
             WRAM_START..=WRAM_END => self.wram[(addr - WRAM_START) as usize] = val,
             HRAM_START..=HRAM_END => self.hram[(addr - HRAM_START) as usize] = val,
             TIMER_START..=TIMER_END => self.timer.write(addr, val),
