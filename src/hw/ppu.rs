@@ -1,3 +1,5 @@
+use crate::hw;
+
 /// Defines the mode in which the [`Ppu`] is operating
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Mode {
@@ -6,32 +8,6 @@ pub enum Mode {
     OamScan = 2,
     Drawing = 3,
 }
-
-pub const SCREEN_WIDTH: usize = 160;
-pub const SCREEN_HEIGHT: usize = 144;
-
-const VRAM_SIZE: usize = 8192;
-pub const VRAM_START: u16 = 0x8000;
-pub const VRAM_END: u16 = 0x9FFF;
-
-const OAM_SIZE: usize = 160;
-pub const OAM_START: u16 = 0xFE00;
-pub const OAM_END: u16 = 0xFE9F;
-
-pub const LCDC_ADDRESS: u16 = 0xFF40;
-pub const STAT_ADDRESS: u16 = 0xFF41;
-pub const SCY_ADDRESS: u16 = 0xFF42;
-pub const SCX_ADDRESS: u16 = 0xFF43;
-pub const LY_ADDRESS: u16 = 0xFF44;
-pub const LYC_ADDRESS: u16 = 0xFF45;
-pub const BGP_ADDRESS: u16 = 0xFF47;
-pub const OBP0_ADDRESS: u16 = 0xFF48;
-pub const OBP1_ADDRESS: u16 = 0xFF49;
-
-const WHITE: u32 = 0xFFFFFFFF;
-const LGREY: u32 = 0xFFAAAAAA;
-const DGREY: u32 = 0xFF555555;
-const BLACK: u32 = 0xFF000000;
 
 /// Emulates the PPU of the Gameboy
 /// `vram` -> video ram
@@ -48,10 +24,12 @@ const BLACK: u32 = 0xFF000000;
 /// `frame_buffer` -> screen's pixels
 /// `vblank_interrupt` -> signals if [Mode::VBlank] was requested
 /// `obp0` & `obp1` -> palette registers for sprites
+/// `wx` & `wy` -> window register to mange background
+/// `bg_line_color_indices` -> used for priority
 #[derive(Debug)]
 pub struct Ppu {
-    vram: [u8; VRAM_SIZE],
-    oam: [u8; OAM_SIZE],
+    vram: [u8; hw::VRAM_SIZE],
+    oam: [u8; hw::OAM_SIZE],
     lcdc: u8,
     stat: u8,
     scy: u8,
@@ -61,32 +39,37 @@ pub struct Ppu {
     bgp: u8,
     mode: Mode,
     ticks: u32,
-    frame_buffer: [u32; SCREEN_WIDTH * SCREEN_HEIGHT],
+    frame_buffer: [u32; hw::SCREEN_WIDTH * hw::SCREEN_HEIGHT],
     vblank_interrupt: bool,
     obp0: u8,
     obp1: u8,
+    wy: u8,
+    wx: u8,
+    bg_line_color_indices: [u8; hw::OAM_SIZE],
 }
 
 impl Ppu {
     pub fn new() -> Self {
         Self {
-            vram: [0; VRAM_SIZE],
-            oam: [0; OAM_SIZE],
+            vram: [hw::U8_ZERO; hw::VRAM_SIZE],
+            oam: [hw::U8_ZERO; hw::OAM_SIZE],
             // TODO this is the setup after boot rom, add real in the future
             lcdc: 0x91, // LCD Enabled, BG Enabled
-            stat: 0x85, // Mode 1 (starting in VBlank)
-            scy: 0,
-            scx: 0,
-            ly: 0,
-            lyc: 0,
+            stat: 0x85, // Starting in VBlank
+            scy: hw::U8_ZERO,
+            scx: hw::U8_ZERO,
+            ly: hw::U8_ZERO,
+            lyc: hw::U8_ZERO,
             bgp: 0xFC, // Standard palette (11 11 11 00)
-
             mode: Mode::OamScan,
-            ticks: 0,
-            frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
+            ticks: hw::U32_ZERO,
+            frame_buffer: [hw::WHITE; hw::SCREEN_WIDTH * hw::SCREEN_HEIGHT],
             vblank_interrupt: false,
-            obp0: 0,
-            obp1: 0,
+            obp0: hw::U8_ZERO, // Default sprite palette 0 (hardware default)
+            obp1: hw::U8_ZERO, // Default sprite palette 1 (hardware default)
+            wy: hw::U8_ZERO,
+            wx: hw::U8_ZERO,
+            bg_line_color_indices: [hw::U8_ZERO; hw::OAM_SIZE],
         }
     }
 
@@ -101,7 +84,7 @@ impl Ppu {
     }
 
     /// Helper to read the frame buffer
-    pub fn get_frame(&self) -> [u32; SCREEN_WIDTH * SCREEN_HEIGHT] {
+    pub fn get_frame(&self) -> [u32; hw::SCREEN_WIDTH * hw::SCREEN_HEIGHT] {
         self.frame_buffer
     }
 
@@ -164,49 +147,77 @@ impl Ppu {
         let palette_index = (self.bgp >> (color_id * 2)) & 0x03;
 
         match palette_index {
-            0 => WHITE,
-            1 => LGREY,
-            2 => DGREY,
-            _ => BLACK,
+            0 => hw::WHITE,
+            1 => hw::LGREY,
+            2 => hw::DGREY,
+            _ => hw::BLACK,
         }
     }
 
     /// Helper to get the color for sprites
     fn get_sprite_color(&self, color_id: u8, palette: u8) -> u32 {
-        // Color 0 is transparent
-        if color_id == 0 {
-            return 0;
-        }
-
         let palette_index = (palette >> (color_id * 2)) & 0x03;
         match palette_index {
-            0 => WHITE,
-            1 => LGREY,
-            2 => DGREY,
-            _ => BLACK,
+            0 => hw::WHITE,
+            1 => hw::LGREY,
+            2 => hw::DGREY,
+            _ => hw::BLACK,
         }
     }
 
     /// Renders a line for the display
     pub fn render_scanline(&mut self) {
-        if (self.lcdc & 0x01) == 0 {
+        // Bit 7 of LCDC is the LCD enable flag. If 0, display should be off (white)
+        let lcd_enable = (self.lcdc & 0x80) != 0;
+        if !lcd_enable {
+            // Fill the scanline with white (palette index 0 = white)
+            for x in 0..hw::SCREEN_WIDTH {
+                let buffer_idx = (self.ly as usize * hw::SCREEN_WIDTH) + x;
+                self.frame_buffer[buffer_idx] = hw::WHITE;
+            }
             return;
         }
 
-        let tile_map_base: u16 = if (self.lcdc & 0x08) != 0 {
+        // Bit 0 of lcdc acts as a master enable for the BG and Window on DMG
+        let bg_window_enable = (self.lcdc & 0x01) != 0;
+        let window_enable = (self.lcdc & 0x20) != 0 && self.ly >= self.wy;
+
+        let bg_tile_map_base: u16 = if (self.lcdc & 0x08) != 0 {
             0x9C00
         } else {
             0x9800
         };
+
+        let win_tile_map_base: u16 = if (self.lcdc & 0x40) != 0 {
+            0x9C00
+        } else {
+            0x9800
+        };
+
         let use_unsigned = (self.lcdc & 0x10) != 0;
 
-        let y_pos = self.ly.wrapping_add(self.scy);
-        let tile_y = (y_pos / 8) as u16;
-        let pixel_y_in_tile = y_pos % 8;
+        for x in 0..hw::SCREEN_WIDTH as u8 {
+            // Determine if current pixel belongs to the Window or Background
+            let is_window = window_enable && x + 7 >= self.wx;
 
-        for x in 0..SCREEN_WIDTH as u8 {
-            let x_pos = x.wrapping_add(self.scx);
-            let tile_x = (x_pos / 8) as u16;
+            let (tile_map_base, x_pos, y_pos) = if is_window {
+                let win_x = (x + 7 - self.wx) as u16;
+                let win_y = (self.ly - self.wy) as u16;
+                (win_tile_map_base, win_x, win_y)
+            } else {
+                if !bg_window_enable {
+                    let buffer_idx = (self.ly as usize * hw::SCREEN_WIDTH) + x as usize;
+                    self.frame_buffer[buffer_idx] = hw::WHITE;
+                    continue;
+                }
+                let bg_x = x.wrapping_add(self.scx) as u16;
+                let bg_y = self.ly.wrapping_add(self.scy) as u16;
+                (bg_tile_map_base, bg_x, bg_y)
+            };
+
+            let tile_y = (y_pos / 8) % 32;
+            let tile_x = (x_pos / 8) % 32;
+            let pixel_y_in_tile = y_pos % 8;
             let pixel_x_in_tile = x_pos % 8;
 
             // Get Tile ID directly from vram array
@@ -224,8 +235,8 @@ impl Ppu {
                 }
             };
 
-            // Calculate "Relative" index for the pixel data
-            let vram_index = (tile_data_addr - 0x8000) + (pixel_y_in_tile as u16 * 2);
+            // Calculate relative index for the pixel data
+            let vram_index = (tile_data_addr - 0x8000) + (pixel_y_in_tile * 2);
 
             // Fetch bytes directly from array
             let byte1 = self.vram[vram_index as usize];
@@ -235,60 +246,74 @@ impl Ppu {
             let lsb = (byte1 >> bit) & 0x01;
             let msb = (byte2 >> bit) & 0x01;
             let color_id = (msb << 1) | lsb;
+            self.bg_line_color_indices[x as usize] = color_id;
 
             let color = self.get_color(color_id);
-            let buffer_idx = (self.ly as usize * SCREEN_WIDTH) + x as usize;
+            let buffer_idx = (self.ly as usize * hw::SCREEN_WIDTH) + x as usize;
             self.frame_buffer[buffer_idx] = color;
         }
     }
 
     /// Renders sprites
     pub fn render_sprites(&mut self) {
-        // Bit 1 of LCDC enables sprites
         if (self.lcdc & 0x02) == 0 {
             return;
         }
 
-        // Loop through 40 sprites in OAM
+        // Check LCDC bit 2 for sprite size (0=8x8, 1=8x16)
+        let is_8x16 = (self.lcdc & 0x04) != 0;
+        let sprite_height = if is_8x16 { 16 } else { 8 };
+
         for i in 0..40 {
             let i = i * 4;
-
-            // Sprite Y and X are offset by 16 and 8 on real hardware
             let sprite_y = self.oam[i] as i16 - 16;
             let sprite_x = self.oam[i + 1] as i16 - 8;
-            let tile_index = self.oam[i + 2];
+            let mut tile_index = self.oam[i + 2];
             let attributes = self.oam[i + 3];
 
-            // Check if the sprite is on the current scanline (LY)
-            if (self.ly as i16) >= sprite_y && (self.ly as i16) < (sprite_y + 8) {
-                let pixel_y = (self.ly as i16 - sprite_y) as u16;
+            if (self.ly as i16) >= sprite_y && (self.ly as i16) < (sprite_y + sprite_height) {
+                let mut pixel_y = (self.ly as i16 - sprite_y) as u16;
 
-                let final_pixel_y = if (attributes & 0x40) != 0 {
-                    7 - pixel_y
-                } else {
-                    pixel_y
-                };
+                // Handle Y-Flip
+                if (attributes & 0x40) != 0 {
+                    pixel_y = (sprite_height as u16 - 1) - pixel_y;
+                }
 
+                // In 8x16 mode, bit 0 of the tile index is ignored for the top tile.
+                // The top 8 pixels use (index & 0xFE), bottom 8 use (index | 0x01).
+                if is_8x16 {
+                    if pixel_y < 8 {
+                        tile_index &= 0xFE;
+                    } else {
+                        tile_index |= 0x01;
+                    }
+                }
+
+                // Calculate address: Note that for 8x16, we treat it as two 8x8 tiles
+                // If we are on the second tile (pixel_y >= 8), our address calculation
+                // should be relative to that specific 8x8 tile.
                 let tile_data_addr = 0x8000 + (tile_index as u16 * 16);
-                let byte1 = self.read(tile_data_addr + (final_pixel_y * 2));
-                let byte2 = self.read(tile_data_addr + (final_pixel_y * 2) + 1);
+                let line_in_tile = pixel_y % 8;
+                let byte1 = self.read(tile_data_addr + (line_in_tile * 2));
+                let byte2 = self.read(tile_data_addr + (line_in_tile * 2) + 1);
 
                 for x in 0..8 {
-                    let pixel_x = sprite_x + x as i16;
-
-                    // Ignore if pixel is off-screen
-                    if !(0..160).contains(&pixel_x) {
+                    let pixel_x_on_screen = sprite_x + x as i16;
+                    if !(0..160).contains(&pixel_x_on_screen) {
                         continue;
                     }
 
                     let bit = if (attributes & 0x20) != 0 { x } else { 7 - x };
-
                     let lsb = (byte1 >> bit) & 0x01;
                     let msb = (byte2 >> bit) & 0x01;
                     let color_id = (msb << 1) | lsb;
 
-                    // 0 is transparent for sprites
                     if color_id == 0 {
+                        continue;
+                    } // Transparent
+
+                    let bg_priority = (attributes & 0x80) != 0;
+                    if bg_priority && self.bg_line_color_indices[pixel_x_on_screen as usize] != 0 {
                         continue;
                     }
 
@@ -299,8 +324,8 @@ impl Ppu {
                     };
                     let color = self.get_sprite_color(color_id, palette);
 
-                    // TODO: Handle Priority (Background over Sprite)
-                    let buffer_idx = (self.ly as usize * 160) + pixel_x as usize;
+                    let buffer_idx =
+                        (self.ly as usize * hw::SCREEN_WIDTH) + pixel_x_on_screen as usize;
                     self.frame_buffer[buffer_idx] = color;
                 }
             }
@@ -309,34 +334,38 @@ impl Ppu {
 
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            VRAM_START..=VRAM_END => self.vram[(addr - VRAM_START) as usize],
-            OAM_START..=OAM_END => self.oam[(addr - OAM_START) as usize],
-            LCDC_ADDRESS => self.lcdc,
-            STAT_ADDRESS => self.stat,
-            SCY_ADDRESS => self.scy,
-            SCX_ADDRESS => self.scx,
-            LY_ADDRESS => self.ly,
-            LYC_ADDRESS => self.lyc,
-            BGP_ADDRESS => self.bgp,
-            OBP0_ADDRESS => self.obp0,
-            OBP1_ADDRESS => self.obp1,
+            hw::VRAM_START..=hw::VRAM_END => self.vram[(addr - hw::VRAM_START) as usize],
+            hw::OAM_START..=hw::OAM_END => self.oam[(addr - hw::OAM_START) as usize],
+            hw::LCDC_ADDRESS => self.lcdc,
+            hw::STAT_ADDRESS => self.stat,
+            hw::SCY_ADDRESS => self.scy,
+            hw::SCX_ADDRESS => self.scx,
+            hw::LY_ADDRESS => self.ly,
+            hw::LYC_ADDRESS => self.lyc,
+            hw::BGP_ADDRESS => self.bgp,
+            hw::OBP0_ADDRESS => self.obp0,
+            hw::OBP1_ADDRESS => self.obp1,
+            hw::WY_ADDRESS => self.wy,
+            hw::WX_ADDRESS => self.wx,
             _ => 0xFF,
         }
     }
 
     pub fn write(&mut self, addr: u16, val: u8) {
         match addr {
-            VRAM_START..=VRAM_END => self.vram[(addr - VRAM_START) as usize] = val,
-            OAM_START..=OAM_END => self.oam[(addr - OAM_START) as usize] = val,
-            LCDC_ADDRESS => self.lcdc = val,
-            STAT_ADDRESS => self.stat = val,
-            SCY_ADDRESS => self.scy = val,
-            SCX_ADDRESS => self.scx = val,
-            LY_ADDRESS => self.ly = 0,
-            LYC_ADDRESS => self.lyc = val,
-            BGP_ADDRESS => self.bgp = val,
-            OBP0_ADDRESS => self.obp0 = val,
-            OBP1_ADDRESS => self.obp1 = val,
+            hw::VRAM_START..=hw::VRAM_END => self.vram[(addr - hw::VRAM_START) as usize] = val,
+            hw::OAM_START..=hw::OAM_END => self.oam[(addr - hw::OAM_START) as usize] = val,
+            hw::LCDC_ADDRESS => self.lcdc = val,
+            hw::STAT_ADDRESS => self.stat = val,
+            hw::SCY_ADDRESS => self.scy = val,
+            hw::SCX_ADDRESS => self.scx = val,
+            hw::LY_ADDRESS => self.ly = 0, // Writes to ly reset it
+            hw::LYC_ADDRESS => self.lyc = val,
+            hw::BGP_ADDRESS => self.bgp = val,
+            hw::OBP0_ADDRESS => self.obp0 = val,
+            hw::OBP1_ADDRESS => self.obp1 = val,
+            hw::WY_ADDRESS => self.wy = val,
+            hw::WX_ADDRESS => self.wx = val,
             _ => {}
         }
     }

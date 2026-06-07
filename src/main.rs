@@ -1,32 +1,37 @@
 mod hw;
 mod utils;
 
-use log::error;
+use clap::Parser;
+use log::{error, warn};
 use minifb::{Key, Scale, Window, WindowOptions};
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
-use hw::cpu::Cpu;
-use hw::ppu::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use hw::cpu;
 
-const TEST_ROM_PATH: &str = "hello.gb";
 const WINDOW_NAME: &str = "Master Console - Game Boy";
 
-// The Game Boy runs at ~59.7 frames per second
-// 1 second / 59.7 = ~16,750 microseconds per frame
-const FRAMERATE: u64 = 16750;
-// 154 lines × 456 cycles per line
-const APPROX_CYCLES_PER_FRAME: u32 = 154 * 456;
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to the ROM file to load (.gb)
+    #[arg(short, long)]
+    path: PathBuf,
+}
 
 fn main() {
+    let args = Args::parse();
     simple_logger::SimpleLogger::new().env().init().unwrap();
 
-    let mut cpu = Cpu::new(TEST_ROM_PATH);
+    let mut cpu = cpu::Cpu::new(args.path);
 
     // Generate window for rendering
     let mut window = Window::new(
         WINDOW_NAME,
-        SCREEN_WIDTH,
-        SCREEN_HEIGHT,
+        hw::SCREEN_WIDTH,
+        hw::SCREEN_HEIGHT,
         WindowOptions {
             scale: Scale::X4,
             ..WindowOptions::default()
@@ -34,21 +39,30 @@ fn main() {
     )
     .unwrap();
 
-    let frame_target_duration = Duration::from_micros(FRAMERATE);
+    let frame_target_duration = Duration::from_micros(hw::FRAMERATE);
 
     // Start loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        cpu.unset_buttons();
         let frame_start_time = Instant::now();
+
+        // Update Joypad state based on keyboard
+        window.get_keys().iter().for_each(|key| {
+            if let Err(e) = cpu.set_button(*key) {
+                warn!("Mapping not set: {}", e);
+            };
+        });
 
         // Run the CPU for one frame's worth of cycles
         let mut cycles_this_frame = 0;
-        while cycles_this_frame < APPROX_CYCLES_PER_FRAME {
+        while cycles_this_frame < hw::APPROX_CYCLES_PER_FRAME {
             let cycles = cpu.step();
             cycles_this_frame += cycles;
         }
 
         // Update the window with the PPU's buffer
-        if let Err(e) = window.update_with_buffer(&cpu.bus.get_frame(), SCREEN_WIDTH, SCREEN_HEIGHT)
+        if let Err(e) =
+            window.update_with_buffer(&cpu.get_frame(), hw::SCREEN_WIDTH, hw::SCREEN_HEIGHT)
         {
             error!("Failed to draw buffer: {}", e)
         }
