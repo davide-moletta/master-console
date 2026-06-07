@@ -4,6 +4,7 @@ use std::{error::Error, fmt, result::Result};
 #[derive(Debug)]
 pub enum GBError {
     Io(std::io::Error),
+    MissingButtonMapping(minifb::Key),
 }
 
 /// Custom [`Result`] that returns a [`GBError`]
@@ -14,6 +15,7 @@ impl fmt::Display for GBError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "IO Error: {}", e),
+            Self::MissingButtonMapping(b) => write!(f, "Missing button mapping: {:?}", b),
         }
     }
 }
