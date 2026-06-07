@@ -1,13 +1,4 @@
-pub enum Buttons {
-    Up,
-    Down,
-    Left,
-    Right,
-    A,
-    B,
-    Start,
-    Select,
-}
+use crate::hw;
 
 /// Emulates the physical buttons of the console
 /// `selected` -> bits 4 & 5 are used to select the button to listen to
@@ -39,18 +30,30 @@ impl Joypad {
         }
     }
 
-    /// Helper to interact with joypad
-    pub fn set_button(&mut self, button: Buttons, val: bool) {
+    /// Set the specified button to true
+    pub fn set_button(&mut self, button: hw::Buttons) {
         match button {
-            Buttons::Up => self.up = val,
-            Buttons::Down => self.down = val,
-            Buttons::Left => self.left = val,
-            Buttons::Right => self.right = val,
-            Buttons::A => self.a = val,
-            Buttons::B => self.b = val,
-            Buttons::Start => self.start = val,
-            Buttons::Select => self.select = val,
+            hw::Buttons::Up => self.up = true,
+            hw::Buttons::Down => self.down = true,
+            hw::Buttons::Left => self.left = true,
+            hw::Buttons::Right => self.right = true,
+            hw::Buttons::A => self.a = true,
+            hw::Buttons::B => self.b = true,
+            hw::Buttons::Start => self.start = true,
+            hw::Buttons::Select => self.select = true,
         }
+    }
+
+    /// Unset all buttons
+    pub fn unset_buttons(&mut self) {
+        self.up = false;
+        self.down = false;
+        self.left = false;
+        self.right = false;
+        self.a = false;
+        self.b = false;
+        self.start = false;
+        self.select = false;
     }
 
     pub fn read(&self) -> u8 {

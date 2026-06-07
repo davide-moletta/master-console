@@ -1,10 +1,13 @@
 use log::warn;
 use std::fmt;
 
-use crate::hw::bus::{self, Bus};
-use crate::hw::opcodes::{Condition, Instruction, Reg8, Reg16};
-
-const IO_MEMORY_START: u16 = 0xFF00;
+use crate::{
+    hw::{
+        self, bus,
+        opcodes::{Condition, Instruction, Reg16, Reg8},
+    },
+    utils::error::GBResult,
+};
 
 /// Type that represents the cpu for the SM83 core
 /// `pc` -> program counter
@@ -33,7 +36,7 @@ pub struct Cpu {
     l: u8,
     ime: bool,
     halted: bool,
-    pub bus: Bus,
+    bus: bus::Bus,
 }
 
 impl fmt::Display for Cpu {
@@ -81,9 +84,8 @@ impl fmt::Display for Cpu {
 }
 
 impl Cpu {
-    // Initialize the cpu, setting `pc` to 0x100
     pub fn new(rom_path: &str) -> Self {
-        let mut bus = Bus::new();
+        let mut bus = bus::Bus::new();
         bus.load_rom(rom_path).expect("Failed to load ROM");
 
         Self {
@@ -104,7 +106,7 @@ impl Cpu {
         }
     }
 
-    // Performs a CPU step
+    /// Performs a CPU step
     pub fn step(&mut self) -> u32 {
         // Handle Interrupts
         let interrupt_cycles = self.handle_interrupts();
@@ -112,7 +114,7 @@ impl Cpu {
         // Handle HALT state
         if self.halted {
             // While halted, the CPU "idles" for 4 cycles at a time
-            // until an interrupt is triggered.
+            // until an interrupt is triggered
             self.bus.tick(4);
             return 4 + interrupt_cycles;
         }
@@ -138,12 +140,13 @@ impl Cpu {
         cycles + interrupt_cycles
     }
 
+    /// Handle interrupts
     fn handle_interrupts(&mut self) -> u32 {
-        let ie_reg = self.bus.read(bus::IE_ADDRESS);
-        let if_reg = self.bus.read(bus::IF_ADDRESS);
-        let pending = ie_reg & if_reg;
+        // Get interrupt enable and interrupt flag
+        let ie_reg = self.bus.read(hw::IE_ADDRESS);
+        let if_reg = self.bus.read(hw::IF_ADDRESS);
 
-        if pending == 0 {
+        if if_reg == hw::U8_ZERO {
             return 0;
         }
 
@@ -159,8 +162,18 @@ impl Cpu {
 
         // Check bits 0-4 for VBlank, LCD Stat, Timer, Serial, Joypad
         for i in 0..5 {
-            if (pending & (1 << i)) != 0 {
-                self.service_interrupt(i);
+            // Check if both interrupt is enabled (IE) and pending (IF)
+            if ((ie_reg & (1 << i)) != 0) && ((if_reg & (1 << i)) != 0) {
+                // Disable interrupts while handling one
+                self.ime = false;
+
+                // Clear the flag in the IF register
+                let if_reg = self.bus.read(hw::IF_ADDRESS);
+                self.bus.write(hw::IF_ADDRESS, if_reg & !(1 << i));
+
+                let pc_bytes = self.pc.to_be_bytes();
+                self.push_stack(pc_bytes[0], pc_bytes[1]);
+                self.pc = 0x0040 + (i as u16 * 8);
                 return 20;
             }
         }
@@ -168,153 +181,143 @@ impl Cpu {
         0
     }
 
-    fn service_interrupt(&mut self, interrupt_id: u8) {
-        self.ime = false; // Disable interrupts while handling one
-
-        // Clear the flag in the bus field
-        let if_reg = self.bus.read(bus::IF_ADDRESS);
-        self.bus
-            .write(bus::IF_ADDRESS, if_reg & !(1 << interrupt_id));
-
-        let pc_bytes = self.pc.to_be_bytes();
-        self.push_stack(pc_bytes[0], pc_bytes[1]);
-        self.pc = 0x0040 + (interrupt_id as u16 * 8);
-    }
-
-    // Simulate the decoded instruction performing the same operation
-    // Returns the number of cycles used
+    /// Simulate the decoded instruction performing the same operation
+    /// Returns the number of cycles used
     fn execute(&mut self, instr: Instruction) -> u32 {
         match instr {
-            Instruction::NOP => 4,
+            Instruction::NOP => hw::CYCLE_4,
 
             Instruction::STOP => {
                 warn!("STOP executed, entering deep sleep");
                 // TODO for now work like HALT
                 self.halted = true;
-                4
+                hw::CYCLE_4
             }
 
             Instruction::HALT => {
                 self.halted = true;
-                4
+                hw::CYCLE_4
             }
 
             Instruction::DI => {
                 self.ime = false;
-                4
+                hw::CYCLE_4
             }
 
             Instruction::EI => {
                 self.ime = true;
-                4
+                hw::CYCLE_4
             }
 
             Instruction::LD_8(dst, src) => {
                 let val = self.get_reg8(src);
                 self.set_reg8(dst, val);
-                // 8 cycles if memory is accessed ([HL]), else 4
                 if dst == Reg8::HLIndirect || src == Reg8::HLIndirect {
-                    8
+                    hw::CYCLE_8
                 } else {
-                    4
+                    hw::CYCLE_4
                 }
             }
 
             Instruction::LD_8_IMM(dst, val) => {
                 self.set_reg8(dst, val);
-                // 12 cycles for LD [HL], d8; else 8
-                if dst == Reg8::HLIndirect { 12 } else { 8 }
+                if dst == Reg8::HLIndirect {
+                    hw::CYCLE_12
+                } else {
+                    hw::CYCLE_8
+                }
             }
 
+            // hw::IO_JOYPAD is the start of the I/O registers
             Instruction::LDH_A_IMM(val) => {
-                let address = IO_MEMORY_START | (val as u16);
+                let address = hw::IO_JOYPAD | (val as u16);
                 self.a = self.bus.read(address);
-                12
+                hw::CYCLE_12
             }
 
             Instruction::LDH_IMM_A(val) => {
-                let address = IO_MEMORY_START | (val as u16);
+                let address = hw::IO_JOYPAD | (val as u16);
                 self.bus.write(address, self.a);
-                12
+                hw::CYCLE_12
             }
 
             Instruction::LDH_A_C => {
-                let address = IO_MEMORY_START | (self.c as u16);
+                let address = hw::IO_JOYPAD | (self.c as u16);
                 self.a = self.bus.read(address);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LDH_C_A => {
-                let address = IO_MEMORY_START | (self.c as u16);
+                let address = hw::IO_JOYPAD | (self.c as u16);
                 self.bus.write(address, self.a);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_A_IMM_16(val) => {
                 self.a = self.bus.read(val);
-                16
+                hw::CYCLE_16
             }
 
             Instruction::LD_IMM_16_A(val) => {
                 self.bus.write(val, self.a);
-                16
+                hw::CYCLE_16
             }
 
             Instruction::LD_A_BC => {
                 let address = self.get_reg16(Reg16::BC);
                 self.a = self.bus.read(address);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_A_DE => {
                 let address = self.get_reg16(Reg16::DE);
                 self.a = self.bus.read(address);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_BC_A => {
                 let address = self.get_reg16(Reg16::BC);
                 self.bus.write(address, self.a);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_DE_A => {
                 let address = self.get_reg16(Reg16::DE);
                 self.bus.write(address, self.a);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_A_HLI => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.a = self.bus.read(hl);
                 self.set_reg16(Reg16::HL, hl.wrapping_add(1));
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_A_HLD => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.a = self.bus.read(hl);
                 self.set_reg16(Reg16::HL, hl.wrapping_sub(1));
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_HLI_A => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.set_reg16(Reg16::HL, hl.wrapping_add(1));
                 self.bus.write(hl, self.a);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_HLD_A => {
                 let hl = self.get_reg16(Reg16::HL);
                 self.set_reg16(Reg16::HL, hl.wrapping_sub(1));
                 self.bus.write(hl, self.a);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_16_IMM(dst, val) => {
                 self.set_reg16(dst, val);
-                12
+                hw::CYCLE_12
             }
 
             Instruction::LD_IMM_16_SP(val) => {
@@ -326,12 +329,12 @@ impl Cpu {
 
                 self.bus.write(val, low_byte);
                 self.bus.write(val.wrapping_add(1), high_byte);
-                20
+                hw::CYCLE_20
             }
 
             Instruction::LD_SP_HL => {
                 self.sp = self.get_reg16(Reg16::HL);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::LD_HL_SP_e8(val) => {
@@ -357,13 +360,13 @@ impl Cpu {
                 // Calculate the 16-bit result
                 let result = sp.wrapping_add(val as i16 as u16);
                 self.set_reg16(Reg16::HL, result);
-                12
+                hw::CYCLE_12
             }
 
             Instruction::PUSH(src) => {
                 let val = self.get_reg16(src);
                 self.push_stack((val >> 8) as u8, (val & 0xFF) as u8);
-                16
+                hw::CYCLE_16
             }
 
             Instruction::POP(dst) => {
@@ -376,7 +379,7 @@ impl Cpu {
                 } else {
                     self.set_reg16(dst, val);
                 }
-                12
+                hw::CYCLE_12
             }
 
             Instruction::ADD(src) => {
@@ -390,7 +393,11 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::ADD_IMM(val) => {
@@ -403,7 +410,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                8
+                hw::CYCLE_8
             }
 
             Instruction::ADC(src) => {
@@ -422,7 +429,11 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::ADC_IMM(val) => {
@@ -439,7 +450,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                8
+                hw::CYCLE_8
             }
 
             Instruction::SUB(src) => {
@@ -453,7 +464,11 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::SUB_IMM(val) => {
@@ -466,7 +481,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                8
+                hw::CYCLE_8
             }
 
             Instruction::SBC(src) => {
@@ -485,7 +500,11 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::SBC_IMM(val) => {
@@ -502,7 +521,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.a = result;
-                8
+                hw::CYCLE_8
             }
 
             Instruction::AND(src) => {
@@ -511,7 +530,11 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, true, false);
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::AND_IMM(val) => {
@@ -519,7 +542,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, true, false);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::XOR(src) => {
@@ -528,7 +551,11 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::XOR_IMM(val) => {
@@ -536,7 +563,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::OR(src) => {
@@ -545,7 +572,11 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::OR_IMM(val) => {
@@ -553,7 +584,7 @@ impl Cpu {
 
                 let z = self.a == 0;
                 self.set_flags(z, false, false, false);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::CP(src) => {
@@ -566,7 +597,11 @@ impl Cpu {
                 let c = self.a < val;
 
                 self.set_flags(z, n, h, c);
-                if src == Reg8::HLIndirect { 8 } else { 4 }
+                if src == Reg8::HLIndirect {
+                    hw::CYCLE_8
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::CP_IMM(val) => {
@@ -578,7 +613,7 @@ impl Cpu {
                 let c = self.a < val;
 
                 self.set_flags(z, n, h, c);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::INC_8(reg) => {
@@ -592,7 +627,11 @@ impl Cpu {
                 let c = (self.f & 0x10) != 0;
 
                 self.set_flags(z, n, h, c);
-                if reg == Reg8::HLIndirect { 12 } else { 4 }
+                if reg == Reg8::HLIndirect {
+                    hw::CYCLE_12
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::DEC_8(reg) => {
@@ -606,7 +645,11 @@ impl Cpu {
                 let c = (self.f & 0x10) != 0;
 
                 self.set_flags(z, n, h, c);
-                if reg == Reg8::HLIndirect { 12 } else { 4 }
+                if reg == Reg8::HLIndirect {
+                    hw::CYCLE_12
+                } else {
+                    hw::CYCLE_4
+                }
             }
 
             Instruction::ADD_16(src) => {
@@ -621,7 +664,7 @@ impl Cpu {
 
                 self.set_flags(z, n, h, c);
                 self.set_reg16(Reg16::HL, result);
-                8
+                hw::CYCLE_8
             }
 
             Instruction::ADD_16_SP_e8(val) => {
@@ -640,41 +683,41 @@ impl Cpu {
 
                 self.set_flags(false, false, h, c);
                 self.sp = result;
-                16
+                hw::CYCLE_16
             }
 
             Instruction::INC_16(reg) => {
                 let val = self.get_reg16(reg);
                 self.set_reg16(reg, val.wrapping_add(1));
-                8
+                hw::CYCLE_8
             }
 
             Instruction::DEC_16(reg) => {
                 let val = self.get_reg16(reg);
                 self.set_reg16(reg, val.wrapping_sub(1));
-                8
+                hw::CYCLE_8
             }
 
             Instruction::JP(cond, val) => {
                 if self.check_condition(cond) {
                     self.pc = val;
-                    16
+                    hw::CYCLE_16
                 } else {
-                    12
+                    hw::CYCLE_12
                 }
             }
 
             Instruction::JP_HL => {
                 self.pc = self.get_reg16(Reg16::HL);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::JR(cond, offset) => {
                 if self.check_condition(cond) {
                     self.pc = (self.pc as i16 + offset as i16) as u16;
-                    12
+                    hw::CYCLE_12
                 } else {
-                    8
+                    hw::CYCLE_8
                 }
             }
 
@@ -683,9 +726,9 @@ impl Cpu {
                     let pc_bytes = self.pc.to_be_bytes();
                     self.push_stack(pc_bytes[0], pc_bytes[1]);
                     self.pc = val;
-                    24
+                    hw::CYCLE_24
                 } else {
-                    12
+                    hw::CYCLE_12
                 }
             }
 
@@ -694,9 +737,13 @@ impl Cpu {
                     let (low, high) = self.pop_stack();
                     self.pc = ((high as u16) << 8) | (low as u16);
                     // Special case: Conditional RET takes 20 cycles if taken, but RET (None) is always 16
-                    if cond == Condition::None { 16 } else { 20 }
+                    if cond == Condition::None {
+                        hw::CYCLE_16
+                    } else {
+                        hw::CYCLE_20
+                    }
                 } else {
-                    8
+                    hw::CYCLE_8
                 }
             }
 
@@ -704,21 +751,21 @@ impl Cpu {
                 let (low, high) = self.pop_stack();
                 self.pc = ((high as u16) << 8) | (low as u16);
                 self.ime = true;
-                16
+                hw::CYCLE_16
             }
 
             Instruction::RST(val) => {
                 let pc_bytes = self.pc.to_be_bytes();
                 self.push_stack(pc_bytes[0], pc_bytes[1]);
                 self.pc = val as u16;
-                16
+                hw::CYCLE_16
             }
 
             Instruction::RLCA => {
                 let bit7 = (self.a >> 7) & 1;
                 self.a = (self.a << 1) | bit7;
                 self.set_flags(false, false, false, bit7 != 0);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::RLA => {
@@ -726,14 +773,14 @@ impl Cpu {
                 let bit7 = (self.a >> 7) & 1;
                 self.a = (self.a << 1) | old_carry;
                 self.set_flags(false, false, false, bit7 != 0);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::RRCA => {
                 let bit0 = self.a & 0x01;
                 self.a = (self.a >> 1) | (bit0 << 7);
                 self.set_flags(false, false, false, bit0 != 0);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::RRA => {
@@ -741,7 +788,7 @@ impl Cpu {
                 let bit0 = self.a & 0x01;
                 self.a = (self.a >> 1) | (old_carry << 7);
                 self.set_flags(false, false, false, bit0 != 0);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::DAA => {
@@ -764,7 +811,7 @@ impl Cpu {
                 let n = (self.f & 0x40) != 0;
                 self.set_flags(z, n, false, carry);
                 self.a = a;
-                4
+                hw::CYCLE_4
             }
 
             Instruction::CPL => {
@@ -772,20 +819,20 @@ impl Cpu {
                 let z = (self.f & 0x80) != 0;
                 let c = (self.f & 0x10) != 0;
                 self.set_flags(z, true, true, c);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::SCF => {
                 let z = (self.f & 0x80) != 0;
                 self.set_flags(z, false, false, true);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::CCF => {
                 let z = (self.f & 0x80) != 0;
                 let old_c = (self.f & 0x10) != 0;
                 self.set_flags(z, false, false, !old_c);
-                4
+                hw::CYCLE_4
             }
 
             Instruction::PREFIX_CB(cb_opcode) => {
@@ -813,12 +860,16 @@ impl Cpu {
                     _ => unreachable!(),
                 }
                 // CB instructions take 8 cycles if register, 16 if [HL]
-                if reg == Reg8::HLIndirect { 16 } else { 8 }
+                if reg == Reg8::HLIndirect {
+                    hw::CYCLE_16
+                } else {
+                    hw::CYCLE_8
+                }
             }
         }
     }
 
-    // Read value stored in the specified 8-bit register
+    /// Read value stored in the specified [`Reg8`] register
     fn get_reg8(&self, reg: Reg8) -> u8 {
         match reg {
             Reg8::A => self.a,
@@ -832,7 +883,7 @@ impl Cpu {
         }
     }
 
-    // Set value in the specified 8-bit register
+    /// Set value in the specified [`Reg8`] register
     fn set_reg8(&mut self, reg: Reg8, val: u8) {
         match reg {
             Reg8::A => self.a = val,
@@ -846,7 +897,7 @@ impl Cpu {
         }
     }
 
-    // Read value stored in the specified 16-bit register
+    /// Read value stored in the specified [`Reg16`] register
     fn get_reg16(&self, reg: Reg16) -> u16 {
         match reg {
             Reg16::AF => ((self.a as u16) << 8) | (self.f as u16),
@@ -857,7 +908,7 @@ impl Cpu {
         }
     }
 
-    // Set value in the specified 16-bit register
+    /// Set value in the specified [`Reg16`] register
     fn set_reg16(&mut self, reg: Reg16, val: u16) {
         match reg {
             Reg16::AF => {
@@ -880,7 +931,7 @@ impl Cpu {
         }
     }
 
-    // Decode a cb masked instruction
+    /// Decode a cb masked instruction
     fn decode_cb_reg(&self, code: u8) -> Reg8 {
         match code {
             0 => Reg8::B,
@@ -895,7 +946,7 @@ impl Cpu {
         }
     }
 
-    // Execute rotate and shifts for cb masked instructions
+    /// Execute rotate and shifts for cb masked instructions
     fn execute_cb_rotate_shift(&mut self, operation: u8, reg: Reg8) {
         let val = self.get_reg8(reg);
         let mut carry = (self.f & 0x10) != 0;
@@ -951,14 +1002,13 @@ impl Cpu {
             _ => unreachable!(),
         };
 
-        // Flags: SWAP has Z result, others also have Z result.
-        // All CB rotations: N=0, H=0, C=new carry.
+        // All CB rotations: N=0, H=0, C=new carry
         let z = result == 0;
         self.set_flags(z, false, false, carry);
         self.set_reg8(reg, result);
     }
 
-    // Push a value in the stack
+    /// Push a value in the stack
     fn push_stack(&mut self, high: u8, low: u8) {
         // Decrement SP, then write the high byte
         self.sp = self.sp.wrapping_sub(1);
@@ -969,7 +1019,7 @@ impl Cpu {
         self.bus.write(self.sp, low);
     }
 
-    // Pop a value from the stack
+    /// Pop a value from the stack
     fn pop_stack(&mut self) -> (u8, u8) {
         // Increment SP, then read the low byte
         let low = self.bus.read(self.sp);
@@ -982,7 +1032,7 @@ impl Cpu {
         (low, high)
     }
 
-    // Set flags in the F register
+    /// Set flags in the F register
     fn set_flags(&mut self, z: bool, n: bool, h: bool, c: bool) {
         let mut new_f = 0u8;
         if z {
@@ -998,6 +1048,22 @@ impl Cpu {
             new_f |= 0x10;
         }
         self.f = new_f;
+    }
+
+    /// Helper to set the specified button in [`hw::joypad::Joypad`]
+    pub fn set_button(&mut self, key: minifb::Key) -> GBResult<()> {
+        self.bus.set_button(hw::Buttons::try_from(key)?);
+        Ok(())
+    }
+
+    /// Helper to unset buttons in [`hw::joypad::Joypad`]
+    pub fn unset_buttons(&mut self) {
+        self.bus.unset_buttons()
+    }
+
+    /// Helper to read the frame buffer
+    pub fn get_frame(&self) -> [u32; hw::SCREEN_WIDTH * hw::SCREEN_HEIGHT] {
+        self.bus.get_frame()
     }
 
     // Check if the specified condition is set
