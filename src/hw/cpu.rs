@@ -1,5 +1,5 @@
 use log::warn;
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use crate::{
     hw::{
@@ -84,7 +84,7 @@ impl fmt::Display for Cpu {
 }
 
 impl Cpu {
-    pub fn new(rom_path: &str) -> Self {
+    pub fn new(rom_path: PathBuf) -> Self {
         let mut bus = bus::Bus::new();
         bus.load_rom(rom_path).expect("Failed to load ROM");
 

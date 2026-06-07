@@ -1,19 +1,31 @@
 mod hw;
 mod utils;
 
+use clap::Parser;
 use log::{error, warn};
 use minifb::{Key, Scale, Window, WindowOptions};
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use hw::cpu;
 
-const TEST_ROM_PATH: &str = "roms/pkmb.gb";
 const WINDOW_NAME: &str = "Master Console - Game Boy";
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to the ROM file to load (.gb)
+    #[arg(short, long)]
+    path: PathBuf,
+}
+
 fn main() {
+    let args = Args::parse();
     simple_logger::SimpleLogger::new().env().init().unwrap();
 
-    let mut cpu = cpu::Cpu::new(TEST_ROM_PATH);
+    let mut cpu = cpu::Cpu::new(args.path);
 
     // Generate window for rendering
     let mut window = Window::new(

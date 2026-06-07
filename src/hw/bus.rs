@@ -1,5 +1,6 @@
 use log::debug;
 use std::fs;
+use std::path::PathBuf;
 
 use crate::hw::{self, cartridge::Cartridge, joypad::Joypad, ppu::Ppu, timer::Timer};
 use crate::utils::error::GBResult;
@@ -47,7 +48,7 @@ impl Bus {
     }
 
     /// Helper to load input ROM in memory
-    pub fn load_rom(&mut self, rom_path: &str) -> GBResult<()> {
+    pub fn load_rom(&mut self, rom_path: PathBuf) -> GBResult<()> {
         let buffer = fs::read(rom_path)?;
         let rom_size = buffer.len();
 
